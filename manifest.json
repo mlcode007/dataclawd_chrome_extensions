@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "DataCrawler",
+  "version": "1.0",
+  "description": "内容采集综合平台",
+  "permissions": ["sidePanel", "tabs", "storage"],
+  "host_permissions": ["https://www.xiaohongshu.com/*", "https://edith.xiaohongshu.com/*"],
+  "action": { "default_title": "打开侧边栏" },
+  "side_panel": { "default_path": "side_panel.html" },
+  "background": { "service_worker": "js/background/index.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.xiaohongshu.com/*"],
+      "js": ["js/content/main.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.xiaohongshu.com/*"],
+      "js": ["js/content/isolate.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

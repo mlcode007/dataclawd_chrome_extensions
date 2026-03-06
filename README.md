@@ -11,6 +11,17 @@
 5. 安装完成后，点击浏览器工具栏的拼图图标，将本扩展固定到工具栏
 6. 点击扩展图标，侧边栏会在**浏览器右侧**打开并固定显示。
 
+## 打包为 crx / zip
+
+在项目根目录执行：
+
+```bash
+npm install   # 仅首次，安装 crx 等依赖
+npm run pack  # 或：bash scripts/pack.sh
+```
+
+产物在 `dist/` 下：`DataCrawler-<版本>.crx`、`DataCrawler-<版本>.zip`（名称与版本来自 `manifest.json`）。首次打包会生成 `key.pem` 用于 crx 签名，请勿提交到版本库。
+
 ## 文件说明
 
 - `manifest.json`：扩展配置（Manifest V3），使用 side_panel + background
@@ -54,3 +65,16 @@
 | 2025-02-26 | 达人列表页采集：main.js 增加劫持 search/users 接口并发送 XHS_CREATOR_LIST_RESULT；isolate.js 接收后写入 creatorListPages/creatorListResult；侧边栏增加「达人列表」区块与表格（页码/序号/昵称/简介/粉丝数/链接）、清空达人数据按钮 |
 | 2025-02-26 | 按当前页面 URL 切换表格：search_result 仅显示笔记表格，user/profile 仅显示达人列表，其他页面显示全部；增加当前页类型提示，监听标签页切换与导航以自动刷新显示 |
 | 2025-02-26 | 达人列表接口改为 user_posted：拦截 edith.xiaohongshu.com/api/sns/web/v1/user_posted（cursor 分页），首页判断为无 cursor；isolate 支持 data.notes，追加页时页码按页序递增 |
+| 2025-02-28 | 按顺序执行搜索：两次请求间隔改为 5 秒（EXECUTE_WAIT_MS=5000），并在插件状态区显示倒计时（如「执行中 2/5：关键词 · 5 秒后下一词」逐秒递减） |
+| 2026-03-04   | 接口任务自动执行：从接口拉取关键词并自动执行小红书搜索、请求间隔可配置与持久化、支持 result.Keywords 格式。详见 [CHANGELOG_AUTO_TASK.md](CHANGELOG_AUTO_TASK.md) |
+| 2026-03-04   | 搜索时发布时间筛选：侧栏增加「发布时间筛选」下拉（不筛选/一天内/一周内/半年内/一年内），搜索完成后自动在页面内点击对应筛选项；选项持久化。详见 CHANGELOG_AUTO_TASK.md 第 9 节 |
+| 2026-03-04   | 发布时间筛选改为自动判断加载完成：移除固定延迟，轮询 isPublishTimeFilterVisible（每 500ms），出现后即点筛选，最多等 15 秒。详见 CHANGELOG_AUTO_TASK.md 第 10 节 |
+| 2026-03-04   | 启动自动任务适配按顺序执行搜索逻辑：自动任务改为与按顺序执行相同的 injectAndNext + doNext（首词先跳转再注入、直接注入搜索、筛选、随机间隔）。详见 CHANGELOG_AUTO_TASK.md 第 11 节 |
+| 2026-03-07   | 红书（rednote）域名兼容：支持 www.rednote.com 与 xiaohongshu.com 双站点、搜索接口兼容 edith.xiaohongshu.com 与 webapi.rednote.com。详见 [CHANGELOG_REDNOTE.md](CHANGELOG_REDNOTE.md) |
+| 2026-03-07   | 接口根地址可配置：侧栏增加「接口根地址」输入框与保存按钮，持久化到 chrome.storage.local；任务接口、pop、搜索数据回传均使用该配置。详见 [CHANGELOG_API_HOST.md](CHANGELOG_API_HOST.md) |
+| 2026-03-07   | 配置区排版：keyword-add-row 增加 align-items: center，保存按钮与输入框同高、垂直居中对齐。详见 CHANGELOG_API_HOST.md 第 6 节 |
+| 2026-03-07   | 打包排除 script、data 目录：scripts/pack.sh 中 rsync 增加 --exclude='script'、--exclude='data'，crx/zip 不再包含这两类开发与数据文件 |
+| 2026-03-07   | 打包排除 .md 文件：pack.sh 增加 --exclude='*.md'，产物不含 README、CHANGELOG 等文档 |
+| 2026-03-07   | 打包时用 Terser 压缩并混淆 JS：pack.sh 在 rsync 后对 dist/extension/js 下所有 .js 执行 terser --compress --mangle，产物体积更小且变量名缩短，不触犯 CSP |
+| 2026-03-07   | 移除敏感 URL：接口根地址改为占位符 `https://your-api.example/`，manifest 使用 `https://*/*` 以支持用户配置任意接口；CHANGELOG 仅保留描述性说明 |
+| 2026-03-07   | 接口相关命名统一为通用名：apiHost、api_host_default、api/ 路径等，CHANGELOG_ELICE 重命名为 CHANGELOG_API_HOST |

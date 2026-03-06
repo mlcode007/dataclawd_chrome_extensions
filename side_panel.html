@@ -118,6 +118,134 @@
       margin-bottom: 6px;
       color: #333;
     }
+    .keyword-config {
+      margin-bottom: 10px;
+    }
+    .keyword-config label {
+      font-size: 12px;
+      font-weight: 500;
+      color: #666;
+      margin-bottom: 4px;
+    }
+    .keyword-config input {
+      padding: 8px 10px;
+      font-size: 13px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      box-sizing: border-box;
+    }
+    .keyword-config input:focus {
+      outline: none;
+      border-color: #e74c3c;
+    }
+    .keyword-list {
+      list-style: none;
+      margin: 0 0 8px 0;
+      padding: 0;
+      max-height: 140px;
+      overflow-y: auto;
+      border: 1px solid #eee;
+      border-radius: 6px;
+      background: #fafafa;
+    }
+    .keyword-list li {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-bottom: 1px solid #eee;
+      font-size: 13px;
+    }
+    .keyword-list li:last-child { border-bottom: none; }
+    .keyword-list .keyword-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .keyword-list .btn-remove {
+      flex-shrink: 0;
+      padding: 2px 8px;
+      font-size: 12px;
+      color: #999;
+      background: transparent;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .keyword-list .btn-remove:hover { color: #e74c3c; border-color: #e74c3c; }
+    .keyword-add-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .keyword-add-row input { flex: 1; min-width: 0; }
+    .keyword-add-row .btn-secondary {
+      margin-bottom: 0;
+      width: auto;
+      flex-shrink: 0;
+      min-height: 38px;
+      box-sizing: border-box;
+    }
+    .keyword-add-row .btn-add {
+      flex-shrink: 0;
+      padding: 8px 12px;
+      font-size: 13px;
+      color: #fff;
+      background: #e74c3c;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .keyword-add-row .btn-add:hover { background: #c0392b; }
+    .keyword-execute-row { margin-bottom: 10px; }
+    .auto-task-block { margin-top: 16px; padding-top: 12px; border-top: 1px solid #eee; }
+    .interval-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      color: #666;
+    }
+    .interval-row input[type="number"] {
+      width: 56px;
+      padding: 6px 8px;
+      font-size: 13px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+    }
+    .interval-row select {
+      min-width: 88px;
+      padding: 6px 8px;
+      font-size: 13px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: #fff;
+    }
+    .auto-task-buttons { display: flex; gap: 8px; }
+    .auto-task-buttons .btn-primary,
+    .auto-task-buttons .btn-secondary { flex: 1; margin-bottom: 0; }
+    .keyword-execute-status {
+      margin-top: 6px;
+      font-size: 12px;
+    }
+    .callback-log-wrap {
+      margin-top: 8px;
+    }
+    .callback-log-wrap label { font-size: 12px; color: #666; display: block; margin-bottom: 4px; }
+    .callback-log {
+      max-height: 120px;
+      overflow-y: auto;
+      font-size: 11px;
+      line-height: 1.4;
+      color: #555;
+      background: #f8f8f8;
+      border: 1px solid #eee;
+      border-radius: 4px;
+      padding: 6px 8px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      min-height: 18px;
+    }
+    .callback-log .log-ok { color: #2e7d32; }
+    .callback-log .log-err { color: #c62828; }
     .search-result-text {
       width: 100%;
       min-height: 120px;
@@ -186,11 +314,58 @@
     </div>
   </header> -->
   <main class="content">
+    <div class="keyword-config api-config">
+      <label>接口根地址</label>
+      <div class="keyword-add-row">
+        <input type="text" id="apiHostInput" placeholder="https://your-api.example/" />
+        <button type="button" class="btn-secondary" id="btnSaveApiHost">保存</button>
+      </div>
+    </div>
     <button type="button" class="btn-primary" id="btnGetUrl">获取当前页面 URL</button>
     <div class="url-display" id="urlDisplay" style="display: none;"></div>
     <div class="page-type-hint" id="pageTypeHint"></div>
     <div class="search-result-section" id="searchResultSection">
       <label>搜索笔记（search_result 页）</label>
+      <div class="keyword-config">
+        <label>插件搜索关键词（可多个，按顺序执行）</label>
+        <ul class="keyword-list" id="keywordList"></ul>
+        <div class="interval-row">
+          <span>发布时间筛选：</span>
+          <select id="publishTimeFilter">
+            <option value="">不筛选</option>
+            <option value="一天内">一天内</option>
+            <option value="一周内">一周内</option>
+            <option value="半年内" selected>半年内</option>
+            <option value="一年内">一年内</option>
+          </select>
+        </div>
+        <div class="keyword-add-row">
+          <input type="text" id="keywordNewInput" placeholder="输入关键词后点击添加" />
+          <button type="button" class="btn-add" id="btnAddKeyword">添加</button>
+        </div>
+        <div class="keyword-execute-row">
+          <button type="button" class="btn-primary" id="btnExecuteSearch">按顺序执行搜索</button>
+          <div class="keyword-execute-status" id="keywordExecuteStatus"></div>
+        </div>
+      </div>
+      <div class="auto-task-block keyword-config">
+        <label>接口任务自动执行（从接口拉取关键词并自动搜索）</label>
+        <div class="interval-row">
+          <span>请求间隔（秒）：</span>
+          <input type="number" id="autoTaskIntervalMin" min="1" max="120" value="5" title="最小间隔" />
+          <span>～</span>
+          <input type="number" id="autoTaskIntervalMax" min="1" max="120" value="20" title="最大间隔" />
+        </div>
+        <div class="keyword-execute-row auto-task-buttons">
+          <button type="button" class="btn-primary btn-auto-start" id="btnAutoTaskStart">启动自动任务</button>
+          <button type="button" class="btn-secondary btn-auto-stop" id="btnAutoTaskStop" disabled>关闭自动任务</button>
+        </div>
+        <div class="keyword-execute-status" id="autoTaskStatus"></div>
+        <div class="callback-log-wrap">
+          <label>回传日志</label>
+          <div class="callback-log" id="autoTaskCallbackLog"></div>
+        </div>
+      </div>
       <button type="button" class="btn-secondary" id="btnClearTable">清空表格数据</button>
       <div class="search-table-wrap" id="searchResultTableWrap" style="display: none;"></div>
       <textarea class="search-result-text" id="searchResultText" readonly placeholder="在小红书搜索页进行搜索后，此处会显示接口返回的 JSON"></textarea>

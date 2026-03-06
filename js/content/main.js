@@ -1,13 +1,15 @@
 // 运行在页面主环境 (world: MAIN)，劫持 fetch/XHR 拦截小红书搜索接口（笔记 + 达人/用户）；搜索页打开时优先从页面内嵌数据加载第一页
 // 不能使用 chrome.*，通过 postMessage 把结果发给 isolate.js
 (function() {
+  // 搜索笔记接口：兼容小红书与红书两套域名，同时拦截
   var TARGET_NOTES = 'edith.xiaohongshu.com/api/sns/web/v1/search/notes';
+  var TARGET_NOTES_REDNOTE = 'webapi.rednote.com/api/sns/web/v1/search/notes';
   // 达人列表实际接口：某用户发布的笔记列表（分页用 cursor）
   var TARGET_CREATOR = 'edith.xiaohongshu.com/api/sns/web/v1/user_posted';
 
   function isTargetUrl(url) {
     if (!url || typeof url !== 'string') return false;
-    return url.indexOf(TARGET_NOTES) !== -1;
+    return url.indexOf(TARGET_NOTES) !== -1 || url.indexOf(TARGET_NOTES_REDNOTE) !== -1;
   }
 
   function isTargetCreatorUrl(url) {

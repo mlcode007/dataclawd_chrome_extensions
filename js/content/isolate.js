@@ -105,14 +105,27 @@ function sendXhsSearchResult(body) {
       }
       if (!/\/$/.test(host)) host += '/';
       var url = host + ADD_SEARCH_RESULT_PATH + '?trace_id=' + encodeURIComponent(getTraceId());
+      var CALLBACK_TIMEOUT_MS = 60000;
+      var controller = new AbortController();
+      var timeoutId = setTimeout(function() {
+        controller.abort();
+      }, CALLBACK_TIMEOUT_MS);
       fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'User-Agent': 'WeRead/8.2.6 WRBrand/other Dalvik/2.1.0 (Linux; U; Android 13; Pixel 6 Build/TP1A.221105.002)'
         },
-        body: JSON.stringify(body)
-      }).then(function(res) { return res.json(); }).then(resolve).catch(reject);
+        body: JSON.stringify(body),
+        signal: controller.signal
+      }).then(function(res) { return res.json(); }).then(function(data) {
+        clearTimeout(timeoutId);
+        resolve(data);
+      }).catch(function(err) {
+        clearTimeout(timeoutId);
+        if (err.name === 'AbortError') err = new Error('回传超时（' + (CALLBACK_TIMEOUT_MS / 1000) + ' 秒）');
+        reject(err);
+      });
     });
   });
 }

@@ -5,7 +5,7 @@
   "description": "内容采集综合平台",
   "api_host_default": "https://your-api.example/",
   "permissions": ["sidePanel", "tabs", "storage","scripting"],
-  "host_permissions": ["https://www.xiaohongshu.com/*", "https://www.rednote.com/*", "https://edith.xiaohongshu.com/*", "https://webapi.rednote.com/*", "https://*/*"],
+  "host_permissions": ["https://www.xiaohongshu.com/*", "https://www.rednote.com/*", "https://edith.xiaohongshu.com/*", "https://webapi.rednote.com/*", "https://*/*", "http://*/*"],
   "action": { "default_title": "打开侧边栏" },
   "side_panel": { "default_path": "side_panel.html" },
   "background": { "service_worker": "js/background/index.js" },

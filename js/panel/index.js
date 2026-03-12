@@ -544,12 +544,26 @@ function waitRandomWithCountdown(ms) {
   });
 }
 
-/** 搜索完成后在页面内应用「发布时间」筛选（如半年内）。自动轮询直到筛选区域出现再点击，最多等 15 秒。 */
+/** 搜索完成后在页面内应用「发布时间」筛选（如半年内）。自动轮询直到筛选区域出现再点击，最多等 15 秒。失败或超时也会 resolve，避免 Promise 与闭包长期挂起导致内存累积。 */
 function applyPublishTimeFilterAfterSearch(tabId, optionText) {
   if (!optionText || !tabId) return Promise.resolve();
   var pollInterval = 500;
   var maxWait = 15000;
   var start = Date.now();
+  var finished = false;
+
+  var resolve;
+  var promise = new Promise(function(r) { resolve = r; });
+  var safetyTimeoutId = setTimeout(function() {
+    if (!finished) { finished = true; resolve(); }
+  }, maxWait + 2000);
+
+  function finish() {
+    if (finished) return;
+    finished = true;
+    clearTimeout(safetyTimeoutId);
+    resolve();
+  }
 
   function tryClick() {
     chrome.scripting.executeScript({
@@ -558,6 +572,7 @@ function applyPublishTimeFilterAfterSearch(tabId, optionText) {
       func: isPublishTimeFilterVisible,
       args: []
     }, function(res) {
+      if (chrome.runtime.lastError) { finish(); return; }
       var visible = res && res[0] && res[0].result === true;
       if (visible) {
         chrome.scripting.executeScript({
@@ -566,30 +581,31 @@ function applyPublishTimeFilterAfterSearch(tabId, optionText) {
           func: clickPublishTimeFilterOpener,
           args: []
         }, function() {
+          if (chrome.runtime.lastError) { finish(); return; }
           setTimeout(function() {
             chrome.scripting.executeScript({
               target: { tabId: tabId },
               world: 'MAIN',
               func: clickPublishTimeOption,
               args: [optionText]
-            }, function() { resolve(); });
+            }, function() {
+              if (chrome.runtime.lastError) { /* 忽略，仍算完成 */ }
+              finish();
+            });
           }, 1200);
         });
         return;
       }
       if (Date.now() - start >= maxWait) {
-        resolve();
+        finish();
         return;
       }
       setTimeout(tryClick, pollInterval);
     });
   }
 
-  var resolve;
-  return new Promise(function(r) {
-    resolve = r;
-    tryClick();
-  });
+  tryClick();
+  return promise;
 }
 
 /** 在当前标签页执行单个关键词搜索，返回 Promise<boolean> */
@@ -700,6 +716,8 @@ function runAutoTaskLoop() {
               applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
                 setTimeout(refreshSearchResultTable, 3000);
                 thenWait();
+              }).catch(function() {
+                thenWait();
               });
             } else {
               thenWait();
@@ -777,6 +795,14 @@ const searchResultTableWrap = document.getElementById('searchResultTableWrap');
 // 达人列表
 const creatorListText = document.getElementById('creatorListText');
 const creatorTableWrap = document.getElementById('creatorTableWrap');
+
+// 侧边栏关闭/隐藏时清空大块 DOM 与文本，释放引用便于 GC 回收内存
+window.addEventListener('pagehide', function() {
+  if (searchResultTableWrap) searchResultTableWrap.innerHTML = '';
+  if (searchResultText) searchResultText.value = '';
+  if (creatorTableWrap) creatorTableWrap.innerHTML = '';
+  if (creatorListText) creatorListText.value = '';
+});
 
 function getPublishTime(cornerTagInfo) {
   if (!Array.isArray(cornerTagInfo)) return '';

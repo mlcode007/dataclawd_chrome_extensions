@@ -8,6 +8,8 @@ if (window.location.href.indexOf('user/profile') !== -1) {
 
 // ---------- 搜索数据回传（与 Python add_xhs_app_search_result 一致） ----------
 var ADD_SEARCH_RESULT_PATH = 'xhs_extension/add_xhs_app_search_result';
+// 最多在 storage 里保留的页数，超出则只保留最近 N 页，避免 storage 与界面内容无限增长
+var MAX_PAGES_IN_STORAGE = 50;
 
 function getTraceId() {
   return 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.replace(/x/g, function() {
@@ -95,6 +97,25 @@ function parseXhsSearchResultItems(dataItems) {
   return list;
 }
 
+var CALLBACK_MAX_RETRIES = 5;
+
+// 单次回传由 background 发起，避免页面环境下 HTTP/混合内容/CORS 导致 Failed to fetch
+function doOneCallbackRequest(url, body) {
+  return new Promise(function(resolve, reject) {
+    chrome.runtime.sendMessage({ type: 'xhsCallbackFetch', url: url, body: body }, function(response) {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message || 'Extension context invalid'));
+        return;
+      }
+      if (response && response.ok) {
+        resolve(response.data);
+      } else {
+        reject(new Error(response && response.error || '回传失败'));
+      }
+    });
+  });
+}
+
 function sendXhsSearchResult(body) {
   return new Promise(function(resolve, reject) {
     chrome.storage.local.get(['apiHost'], function(obj) {
@@ -105,27 +126,21 @@ function sendXhsSearchResult(body) {
       }
       if (!/\/$/.test(host)) host += '/';
       var url = host + ADD_SEARCH_RESULT_PATH + '?trace_id=' + encodeURIComponent(getTraceId());
-      var CALLBACK_TIMEOUT_MS = 60000;
-      var controller = new AbortController();
-      var timeoutId = setTimeout(function() {
-        controller.abort();
-      }, CALLBACK_TIMEOUT_MS);
-      fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'User-Agent': 'WeRead/8.2.6 WRBrand/other Dalvik/2.1.0 (Linux; U; Android 13; Pixel 6 Build/TP1A.221105.002)'
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal
-      }).then(function(res) { return res.json(); }).then(function(data) {
-        clearTimeout(timeoutId);
-        resolve(data);
-      }).catch(function(err) {
-        clearTimeout(timeoutId);
-        if (err.name === 'AbortError') err = new Error('回传超时（' + (CALLBACK_TIMEOUT_MS / 1000) + ' 秒）');
-        reject(err);
-      });
+      var attempt = 1;
+      var maxAttempts = 1 + CALLBACK_MAX_RETRIES;
+      function tryOnce() {
+        doOneCallbackRequest(url, body).then(function(data) {
+          resolve({ data: data, attempt: attempt });
+        }).catch(function(err) {
+          if (attempt >= maxAttempts) {
+            reject(new Error('回传失败（已重试' + CALLBACK_MAX_RETRIES + '次）: ' + (err && err.message || String(err))));
+          } else {
+            attempt++;
+            tryOnce();
+          }
+        });
+      }
+      tryOnce();
     });
   });
 }
@@ -168,6 +183,9 @@ window.addEventListener('message', function(event) {
         if (sameAsFirst) pages = [obj];
         else pages.push(obj);
       }
+      if (pages.length > MAX_PAGES_IN_STORAGE) {
+        pages = pages.slice(-MAX_PAGES_IN_STORAGE);
+      }
       chrome.storage.local.set({ searchNotesPages: pages, searchNotesResult: JSON.stringify(obj, null, 2) });
     });
 
@@ -184,12 +202,15 @@ window.addEventListener('message', function(event) {
       console.log(body);
       sendXhsSearchResult(body)
         .then(function(result) {
-          var msg = '回传成功 code=' + (result && result.code) + ' message=' + (result && result.message || '');
+          var data = result && result.data;
+          var attempt = result && result.attempt;
+          var attemptStr = attempt != null ? '（第' + attempt + '次）' : '';
+          var msg = '回传成功' + attemptStr + ' code=' + (data && data.code) + ' message=' + (data && data.message || '');
           console.log('[DataCrawler] 搜索数据回传:', msg, result);
           chrome.storage.local.set({ autoTaskCallbackStatus: { success: true, message: msg, time: Date.now() } });
         })
         .catch(function(err) {
-          var msg = '回传失败: ' + (err && err.message || String(err));
+          var msg = err && err.message || String(err);
           console.error('[DataCrawler] 搜索数据回传失败', err);
           chrome.storage.local.set({ autoTaskCallbackStatus: { success: false, message: msg, time: Date.now() } });
         });
@@ -216,6 +237,9 @@ window.addEventListener('message', function(event) {
         var sameAsFirst = prevList && prevList.length && getCreatorId(prevList[0]) === firstId;
         if (sameAsFirst) pages = [obj];
         else pages.push(obj);
+      }
+      if (pages.length > MAX_PAGES_IN_STORAGE) {
+        pages = pages.slice(-MAX_PAGES_IN_STORAGE);
       }
       chrome.storage.local.set({ creatorListPages: pages, creatorListResult: JSON.stringify(obj, null, 2) });
     });

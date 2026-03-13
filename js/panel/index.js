@@ -933,14 +933,15 @@ const searchResultTableWrap = document.getElementById('searchResultTableWrap');
 const creatorListText = document.getElementById('creatorListText');
 const creatorTableWrap = document.getElementById('creatorTableWrap');
 
-// 侧边栏关闭/隐藏时清空大块 DOM 与文本，释放引用便于 GC 回收内存；若未勾选「后台执行」则关闭自动任务
+// 侧边栏关闭/隐藏时清空大块 DOM 与文本；若未勾选「后台执行」则立即执行与「关闭自动任务」相同逻辑（用 DOM 状态，不依赖异步 storage 回调）
 window.addEventListener('pagehide', function() {
-  chrome.storage.local.get(['autoTaskRunInBackground'], function(o) {
-    if (!o.autoTaskRunInBackground) {
-      chrome.runtime.sendMessage({ type: 'stopAutoTask' });
-      chrome.storage.local.set({ autoTaskRunning: false });
-    }
-  });
+  var runInBgEl = document.getElementById('autoTaskRunInBackground');
+  if (!runInBgEl || !runInBgEl.checked) {
+    autoTaskAbort = true;
+    chrome.runtime.sendMessage({ type: 'stopAutoTask' });
+    autoTaskRunning = false;
+    chrome.storage.local.set({ autoTaskRunning: false, autoTaskStatus: '已关闭' });
+  }
   if (searchResultTableWrap) searchResultTableWrap.innerHTML = '';
   if (searchResultText) searchResultText.value = '';
   if (creatorTableWrap) creatorTableWrap.innerHTML = '';

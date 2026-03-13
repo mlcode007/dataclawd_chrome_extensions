@@ -259,7 +259,7 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
     if (!el) {
       el = document.createElement('div');
       el.id = 'data-crawler-countdown-box';
-      el.style.cssText = 'position:fixed;top:14px;left:14px;z-index:2147483647;padding:10px 14px;border-radius:10px;background:rgba(0,0,0,0.82);color:#fff;font-size:13px;font-family:system-ui,-apple-system,sans-serif;box-shadow:0 2px 12px rgba(0,0,0,0.25);pointer-events:none;line-height:1.4;';
+      el.style.cssText = 'position:fixed;top:14px;right:14px;z-index:2147483647;padding:10px 14px;border-radius:10px;background:rgba(0,0,0,0.82);color:#fff;font-size:13px;font-family:system-ui,-apple-system,sans-serif;box-shadow:0 2px 12px rgba(0,0,0,0.25);pointer-events:none;line-height:1.4;';
       document.body.appendChild(el);
     }
     if (dataCrawlerCountdownIntervalId) {

@@ -41,6 +41,19 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
   }
   if (msg.type === 'stopAutoTask') {
     backgroundAutoTaskAbort = true;
+    if (backgroundAutoTaskCountdownTimerId) {
+      clearInterval(backgroundAutoTaskCountdownTimerId);
+      backgroundAutoTaskCountdownTimerId = null;
+    }
+    if (backgroundAutoTaskWaitTimeoutId) {
+      clearTimeout(backgroundAutoTaskWaitTimeoutId);
+      backgroundAutoTaskWaitTimeoutId = null;
+    }
+    if (backgroundAutoTaskDoneCallback) {
+      backgroundAutoTaskDoneCallback();
+    }
+    sendCountdownToPage(false);
+    chrome.storage.local.set({ autoTaskRunning: false, autoTaskStatus: '已关闭' });
     sendResponse({ ok: true });
     return false;
   }
@@ -71,6 +84,9 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
 // ---------- 后台自动任务（与 panel 逻辑一致，关闭侧边栏后继续运行） ----------
 var backgroundAutoTaskAbort = false;
 var backgroundAutoTaskRunning = false;
+var backgroundAutoTaskWaitTimeoutId = null;
+var backgroundAutoTaskCountdownTimerId = null;
+var backgroundAutoTaskDoneCallback = null;
 var SEARCH_BASE_URL = 'https://www.xiaohongshu.com/search_result';
 var REDNOTE_SEARCH_BASE_URL = 'https://www.rednote.com/search_result';
 
@@ -354,12 +370,16 @@ function applyPublishTimeFilterAfterSearch(tabId, optionText) {
 function runBackgroundAutoTaskLoop() {
   backgroundAutoTaskRunning = true;
   function done() {
+    backgroundAutoTaskDoneCallback = null;
+    backgroundAutoTaskCountdownTimerId = null;
+    backgroundAutoTaskWaitTimeoutId = null;
     backgroundAutoTaskRunning = false;
     pushAutoTaskLogLine('已关闭');
     sendCountdownToPage(false);
     chrome.storage.local.set({ autoTaskRunning: false, autoTaskStatus: '已关闭' });
     chrome.storage.local.remove('currentKeywordTask');
   }
+  backgroundAutoTaskDoneCallback = done;
 
   function getTab() {
     return new Promise(function(resolve) {
@@ -438,17 +458,27 @@ function runBackgroundAutoTaskLoop() {
                       pushAutoTaskLogLine(waitText);
                       sendCountdownToPage(true, '请求关键词', sec);
                       var remainSec = sec;
-                      var countdownTimer = setInterval(function() {
-                        if (backgroundAutoTaskAbort) { clearInterval(countdownTimer); return; }
+                      backgroundAutoTaskCountdownTimerId = setInterval(function() {
+                        if (backgroundAutoTaskAbort) {
+                          if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
+                          backgroundAutoTaskCountdownTimerId = null;
+                          return;
+                        }
                         remainSec--;
                         if (remainSec <= 0) {
-                          clearInterval(countdownTimer);
+                          if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
+                          backgroundAutoTaskCountdownTimerId = null;
                           return;
                         }
                         setAutoTaskStatusInStorage('等待下一词 · ' + remainSec + ' 秒');
+                        sendCountdownToPage(true, '请求关键词', remainSec);
                       }, 1000);
-                      setTimeout(function() {
-                        if (countdownTimer) clearInterval(countdownTimer);
+                      backgroundAutoTaskWaitTimeoutId = setTimeout(function() {
+                        backgroundAutoTaskWaitTimeoutId = null;
+                        if (backgroundAutoTaskCountdownTimerId) {
+                          clearInterval(backgroundAutoTaskCountdownTimerId);
+                          backgroundAutoTaskCountdownTimerId = null;
+                        }
                         doNext();
                       }, ms);
                     });

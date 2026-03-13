@@ -1,0 +1,12 @@
+{
+  "name": "dataclawd-chrome-extensions",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "pack": "bash scripts/pack.sh"
+  },
+  "devDependencies": {
+    "crx": "^5.0.1",
+    "terser": "^5.31.0"
+  }
+}

@@ -219,6 +219,13 @@
       border-radius: 6px;
       background: #fff;
     }
+    .interval-row label.checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+    }
     .auto-task-buttons { display: flex; gap: 8px; }
     .auto-task-buttons .btn-primary,
     .auto-task-buttons .btn-secondary { flex: 1; margin-bottom: 0; }
@@ -320,6 +327,14 @@
         <input type="text" id="apiHostInput" placeholder="https://your-api.example/" />
         <button type="button" class="btn-secondary" id="btnSaveApiHost">保存</button>
       </div>
+      <label>手机号</label>
+      <div class="keyword-add-row">
+        <input type="text" id="smsPhoneInput" placeholder="用于接码的手机号" />
+      </div>
+      <label>接码链接</label>
+      <div class="keyword-add-row">
+        <input type="text" id="smsCodeUrlInput" placeholder="接码平台或接口链接" />
+      </div>
     </div>
     <button type="button" class="btn-primary" id="btnGetUrl">获取当前页面 URL</button>
     <div class="url-display" id="urlDisplay" style="display: none;"></div>
@@ -355,6 +370,12 @@
           <input type="number" id="autoTaskIntervalMin" min="1" max="120" value="5" title="最小间隔" />
           <span>～</span>
           <input type="number" id="autoTaskIntervalMax" min="1" max="120" value="20" title="最大间隔" />
+        </div>
+        <div class="interval-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="autoTaskRunInBackground" />
+            后台执行（关闭侧边栏后继续运行）
+          </label>
         </div>
         <div class="keyword-execute-row auto-task-buttons">
           <button type="button" class="btn-primary btn-auto-start" id="btnAutoTaskStart">启动自动任务</button>

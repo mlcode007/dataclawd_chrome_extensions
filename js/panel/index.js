@@ -82,9 +82,13 @@ function getSearchBaseUrl(tabUrl) {
 } // 两次请求间隔（毫秒），并在插件中倒计时显示
 var executeCountdownTimer = null; // 倒计时定时器，便于清理
 
-// 接口根地址：可配置并持久化到 chrome.storage.local，默认值来自 manifest 的 api_host_default
+// 接口根地址、手机号、接码链接：可配置并持久化到 chrome.storage.local
 var API_HOST_STORAGE_KEY = 'apiHost';
+var SMS_PHONE_STORAGE_KEY = 'smsPhone';
+var SMS_CODE_URL_STORAGE_KEY = 'smsCodeUrl';
 var apiHost = '';
+var smsPhone = '';
+var smsCodeUrl = '';
 
 function getApiHostDefault() {
   var m = chrome.runtime.getManifest();
@@ -97,11 +101,17 @@ function getApiHost() {
 }
 
 function loadApiHost() {
-  chrome.storage.local.get([API_HOST_STORAGE_KEY], function(o) {
+  chrome.storage.local.get([API_HOST_STORAGE_KEY, SMS_PHONE_STORAGE_KEY, SMS_CODE_URL_STORAGE_KEY], function(o) {
     var v = (o[API_HOST_STORAGE_KEY] || '').trim();
     apiHost = v || getApiHostDefault();
     var input = document.getElementById('apiHostInput');
     if (input) input.value = apiHost;
+    smsPhone = (o[SMS_PHONE_STORAGE_KEY] || '').trim();
+    smsCodeUrl = (o[SMS_CODE_URL_STORAGE_KEY] || '').trim();
+    var phoneEl = document.getElementById('smsPhoneInput');
+    if (phoneEl) phoneEl.value = smsPhone;
+    var urlEl = document.getElementById('smsCodeUrlInput');
+    if (urlEl) urlEl.value = smsCodeUrl;
   });
 }
 
@@ -110,7 +120,13 @@ function saveApiHost() {
   if (!input) return;
   var v = (input.value || '').trim() || getApiHostDefault();
   apiHost = v;
-  chrome.storage.local.set({ apiHost: v });
+  var phoneEl = document.getElementById('smsPhoneInput');
+  var urlEl = document.getElementById('smsCodeUrlInput');
+  var phoneVal = (phoneEl && phoneEl.value || '').trim();
+  var urlVal = (urlEl && urlEl.value || '').trim();
+  smsPhone = phoneVal;
+  smsCodeUrl = urlVal;
+  chrome.storage.local.set({ apiHost: v, smsPhone: phoneVal, smsCodeUrl: urlVal });
 }
 
 // 接口任务自动执行（与 Python 一致：用 maa_router/pop 获取完整任务对象，供回传 kwInfo）
@@ -412,13 +428,46 @@ function loadAutoTaskInterval() {
   });
 }
 
+var AUTO_TASK_RUN_IN_BACKGROUND_KEY = 'autoTaskRunInBackground';
+var autoTaskRunInBackgroundEl = document.getElementById('autoTaskRunInBackground');
+
+function loadAutoTaskRunInBackground() {
+  chrome.storage.local.get([AUTO_TASK_RUN_IN_BACKGROUND_KEY], function(o) {
+    var v = !!(o[AUTO_TASK_RUN_IN_BACKGROUND_KEY]);
+    if (autoTaskRunInBackgroundEl) autoTaskRunInBackgroundEl.checked = v;
+  });
+}
+
+function saveAutoTaskRunInBackground() {
+  var v = !!(autoTaskRunInBackgroundEl && autoTaskRunInBackgroundEl.checked);
+  chrome.storage.local.set({ autoTaskRunInBackground: v });
+}
+
 loadAutoTaskInterval();
 if (autoTaskIntervalMin) autoTaskIntervalMin.addEventListener('change', saveAutoTaskInterval);
 if (autoTaskIntervalMax) autoTaskIntervalMax.addEventListener('change', saveAutoTaskInterval);
+loadAutoTaskRunInBackground();
+if (autoTaskRunInBackgroundEl) autoTaskRunInBackgroundEl.addEventListener('change', saveAutoTaskRunInBackground);
 
 loadApiHost();
 var btnSaveApiHost = document.getElementById('btnSaveApiHost');
 if (btnSaveApiHost) btnSaveApiHost.addEventListener('click', function() { saveApiHost(); });
+var smsPhoneInputEl = document.getElementById('smsPhoneInput');
+var smsCodeUrlInputEl = document.getElementById('smsCodeUrlInput');
+if (smsPhoneInputEl) smsPhoneInputEl.addEventListener('blur', function() { saveApiHost(); });
+if (smsCodeUrlInputEl) smsCodeUrlInputEl.addEventListener('blur', function() { saveApiHost(); });
+
+// 同步后台任务状态：若在 background 中运行，打开侧边栏时显示正确按钮与状态
+function syncAutoTaskStateFromStorage() {
+  chrome.storage.local.get(['autoTaskRunning', 'autoTaskStatus'], function(o) {
+    if (o.autoTaskRunning === true) {
+      autoTaskRunning = true;
+      updateAutoTaskButtons();
+      if (o.autoTaskStatus && autoTaskStatusEl) autoTaskStatusEl.textContent = o.autoTaskStatus;
+    }
+  });
+}
+syncAutoTaskStateFromStorage();
 
 function setAutoTaskStatus(text) {
   if (autoTaskStatusEl) autoTaskStatusEl.textContent = text || '';
@@ -765,21 +814,40 @@ function bindAutoTaskButtons() {
   var btnStart = document.getElementById('btnAutoTaskStart');
   var btnStop = document.getElementById('btnAutoTaskStop');
   var statusEl = document.getElementById('autoTaskStatus');
+  var runInBg = document.getElementById('autoTaskRunInBackground');
   if (btnStart) {
     btnStart.onclick = function() {
       if (statusEl) statusEl.textContent = '启动中…';
-      try {
-        runAutoTaskLoop();
-      } catch (err) {
-        if (statusEl) statusEl.textContent = '启动失败：' + (err && err.message ? err.message : String(err));
-        autoTaskRunning = false;
-        updateAutoTaskButtons();
+      if (runInBg && runInBg.checked) {
+        chrome.storage.local.set({ autoTaskRunning: true }, function() {
+          chrome.runtime.sendMessage({ type: 'startAutoTask' }, function() {
+            if (chrome.runtime.lastError) {
+              if (statusEl) statusEl.textContent = '后台启动失败：' + (chrome.runtime.lastError.message || '');
+              chrome.storage.local.set({ autoTaskRunning: false });
+              autoTaskRunning = false;
+              updateAutoTaskButtons();
+              return;
+            }
+            autoTaskRunning = true;
+            updateAutoTaskButtons();
+            if (statusEl) statusEl.textContent = '已在后台启动（可关闭侧边栏）';
+          });
+        });
+      } else {
+        try {
+          runAutoTaskLoop();
+        } catch (err) {
+          if (statusEl) statusEl.textContent = '启动失败：' + (err && err.message ? err.message : String(err));
+          autoTaskRunning = false;
+          updateAutoTaskButtons();
+        }
       }
     };
   }
   if (btnStop) {
     btnStop.onclick = function() {
       autoTaskAbort = true;
+      chrome.runtime.sendMessage({ type: 'stopAutoTask' });
     };
   }
 }
@@ -1108,6 +1176,16 @@ chrome.tabs.onUpdated.addListener(function(updatedTabId, changeInfo) {
 
 chrome.storage.onChanged.addListener(function(changes, areaName) {
   if (areaName !== 'local') return;
+  if (changes.autoTaskRunning !== undefined) {
+    autoTaskRunning = changes.autoTaskRunning.newValue === true;
+    updateAutoTaskButtons();
+    if (autoTaskStatusEl && changes.autoTaskStatus && changes.autoTaskStatus.newValue != null) {
+      autoTaskStatusEl.textContent = changes.autoTaskStatus.newValue;
+    }
+  }
+  if (changes.autoTaskStatus && changes.autoTaskStatus.newValue != null && autoTaskStatusEl) {
+    autoTaskStatusEl.textContent = changes.autoTaskStatus.newValue;
+  }
   if (changes[KEYWORD_STORAGE_KEY] && Array.isArray(changes[KEYWORD_STORAGE_KEY].newValue)) {
     pluginSearchKeywords = changes[KEYWORD_STORAGE_KEY].newValue;
     renderKeywordList();

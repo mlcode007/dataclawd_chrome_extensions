@@ -482,6 +482,46 @@ var smsCodeUrlInputEl = document.getElementById('smsCodeUrlInput');
 if (smsPhoneInputEl) smsPhoneInputEl.addEventListener('blur', function() { saveApiHost(); });
 if (smsCodeUrlInputEl) smsCodeUrlInputEl.addEventListener('blur', function() { saveApiHost(); });
 
+var btnFetchSmsCode = document.getElementById('btnFetchSmsCode');
+var smsCodeResultEl = document.getElementById('smsCodeResult');
+
+function showSmsCodeResult(text, isErr) {
+  if (!smsCodeResultEl) return;
+  smsCodeResultEl.textContent = text || '';
+  smsCodeResultEl.style.display = text ? 'block' : 'none';
+  smsCodeResultEl.style.borderLeftColor = isErr ? '#c62828' : '#e74c3c';
+  smsCodeResultEl.style.color = isErr ? '#c62828' : '#333';
+}
+
+if (btnFetchSmsCode) {
+  btnFetchSmsCode.addEventListener('click', function() {
+    saveApiHost();
+    var url = (smsCodeUrl || '').trim();
+    if (!url) {
+      showSmsCodeResult('请先填写接码链接', true);
+      return;
+    }
+    btnFetchSmsCode.disabled = true;
+    btnFetchSmsCode.textContent = '获取中…';
+    showSmsCodeResult('');
+    fetch(url)
+      .then(function(res) { return res.text(); })
+      .then(function(text) {
+        btnFetchSmsCode.disabled = false;
+        btnFetchSmsCode.textContent = '测试';
+        var raw = text.trim().slice(0, 300) || '（响应为空）';
+        var codeMatch = raw.match(/\bcode\b[^0-9]*(\d+)/i);
+        var display = raw + '\n' + (codeMatch ? ('验证码：' + codeMatch[1]) : '未抽取到验证码');
+        showSmsCodeResult(display, false);
+      })
+      .catch(function(err) {
+        btnFetchSmsCode.disabled = false;
+        btnFetchSmsCode.textContent = '测试';
+        showSmsCodeResult('请求失败：' + (err && err.message || String(err)), true);
+      });
+  });
+}
+
 // 同步后台任务状态：若在 background 中运行，打开侧边栏时显示正确按钮与状态
 function syncAutoTaskStateFromStorage() {
   chrome.storage.local.get(['autoTaskRunning', 'autoTaskStatus'], function(o) {
@@ -1240,6 +1280,377 @@ chrome.storage.local.get(['searchNotesPages', 'searchNotesResult', 'creatorListP
 });
 
 // 切换标签页或当前页导航时，根据新 URL 更新显示的表格类型
+// ========== 账号管理：自动退出 & 自动登录 ==========
+
+var accountStatusEl = document.getElementById('accountStatus');
+var btnAutoLogout = document.getElementById('btnAutoLogout');
+var btnAutoLogin = document.getElementById('btnAutoLogin');
+
+function setAccountStatus(text, type) {
+  if (!accountStatusEl) return;
+  accountStatusEl.textContent = text || '';
+  accountStatusEl.className = 'account-status' + (type ? ' ' + type : '');
+}
+
+// ---- 自动退出：清除小红书全部 Cookie 后刷新 ----
+// 注入到页面：点击左侧"≡ 更多"按钮
+function _xhsClickMore() {
+  try {
+    var nodes = document.evaluate(
+      "//*[normalize-space(.)='更多' or normalize-space(text())='更多']",
+      document, null, 7, null
+    );
+    for (var i = nodes.snapshotLength - 1; i >= 0; i--) {
+      var el = nodes.snapshotItem(i);
+      if (!el) continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) continue;
+      var x = rect.left + rect.width / 2;
+      var y = rect.top + rect.height / 2;
+      var opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      el.dispatchEvent(new MouseEvent('mouseup', opts));
+      el.dispatchEvent(new MouseEvent('click', opts));
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+// 注入到页面：点击菜单中的"退出登录"
+function _xhsClickLogout() {
+  try {
+    var nodes = document.evaluate(
+      "//*[normalize-space(.)='退出登录' or normalize-space(text())='退出登录']",
+      document, null, 7, null
+    );
+    for (var i = nodes.snapshotLength - 1; i >= 0; i--) {
+      var el = nodes.snapshotItem(i);
+      if (!el) continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) continue;
+      var x = rect.left + rect.width / 2;
+      var y = rect.top + rect.height / 2;
+      var opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      el.dispatchEvent(new MouseEvent('mouseup', opts));
+      el.dispatchEvent(new MouseEvent('click', opts));
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+function clearXhsCookies(callback) {
+  var domains = ['.xiaohongshu.com', 'www.xiaohongshu.com', '.rednote.com', 'www.rednote.com'];
+  var total = 0;
+  var pending = domains.length;
+  domains.forEach(function(domain) {
+    chrome.cookies.getAll({ domain: domain }, function(cookies) {
+      if (!cookies || !cookies.length) {
+        pending--;
+        if (pending <= 0 && callback) callback(total);
+        return;
+      }
+      var dp = cookies.length;
+      cookies.forEach(function(cookie) {
+        var protocol = cookie.secure ? 'https://' : 'http://';
+        var removeUrl = protocol + cookie.domain.replace(/^\./, '') + cookie.path;
+        chrome.cookies.remove({ url: removeUrl, name: cookie.name }, function() {
+          total++;
+          dp--;
+          if (dp <= 0) {
+            pending--;
+            if (pending <= 0 && callback) callback(total);
+          }
+        });
+      });
+    });
+  });
+}
+
+function doAutoLogout() {
+  setAccountStatus('正在退出…', 'ing');
+  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+    var tab = tabs[0];
+    if (!tab || !tab.id) {
+      setAccountStatus('无法获取当前标签页', 'err');
+      return;
+    }
+    var tabId = tab.id;
+    var tabUrl = (tab.url || '').toLowerCase();
+    var isXhsTab = tabUrl.indexOf('xiaohongshu.com') !== -1 || tabUrl.indexOf('rednote.com') !== -1;
+    var targetUrl = isXhsTab
+      ? (tabUrl.indexOf('rednote.com') !== -1 ? 'https://www.rednote.com' : 'https://www.xiaohongshu.com')
+      : 'https://www.xiaohongshu.com';
+
+    function tryLogout() {
+      // Step 1: 点击"≡ 更多"展开菜单
+      setAccountStatus('点击「更多」菜单…', 'ing');
+      chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        world: 'MAIN',
+        func: _xhsClickMore,
+        args: []
+      }, function(results) {
+        var found = results && results[0] && results[0].result;
+        if (!found) {
+          setAccountStatus('未找到「更多」按钮，请确认已登录', 'err');
+          return;
+        }
+        // Step 2: 等菜单展开后点击"退出登录"
+        setTimeout(function() {
+          setAccountStatus('点击「退出登录」…', 'ing');
+          chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            world: 'MAIN',
+            func: _xhsClickLogout,
+            args: []
+          }, function(results2) {
+            var clicked = results2 && results2[0] && results2[0].result;
+            if (clicked) {
+              setTimeout(function() {
+                clearXhsCookies(function(n) {
+                  setAccountStatus('退出成功，已清除 ' + n + ' 个 Cookie', 'ok');
+                });
+              }, 2000);
+            } else {
+              setAccountStatus('未找到「退出登录」选项', 'err');
+            }
+          });
+        }, 800);
+      });
+    }
+
+    if (isXhsTab) {
+      tryLogout();
+    } else {
+      chrome.tabs.update(tabId, { url: targetUrl }, function() {
+        setAccountStatus('等待页面加载…', 'ing');
+        waitForTabComplete(tabId).then(function() {
+          setTimeout(tryLogout, 1000);
+        });
+      });
+    }
+  });
+}
+
+// ---- 注入到页面的函数（自动登录各步骤） ----
+
+function _xhsFillPhone(phone) {
+  var selectors = [
+    'input[placeholder*="手机号"]',
+    'input[type="tel"]',
+    'input[placeholder*="请输入手机号"]',
+    'input[name="phone"]',
+    'input[placeholder*="phone"]'
+  ];
+  for (var i = 0; i < selectors.length; i++) {
+    var el = document.querySelector(selectors[i]);
+    if (!el) continue;
+    if (el.offsetParent == null && el.getBoundingClientRect().width <= 0) continue;
+    el.focus();
+    try {
+      var desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+      if (desc && desc.set) desc.set.call(el, phone);
+      else el.value = phone;
+    } catch (e) { el.value = phone; }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  return false;
+}
+
+function _xhsClickSendSms() {
+  var keywords = ['获取验证码', '发送验证码'];
+  for (var k = 0; k < keywords.length; k++) {
+    try {
+      var escaped = keywords[k].replace(/'/g, "''");
+      var nodes = document.evaluate(
+        "//*[normalize-space(.)='" + escaped + "' or normalize-space(text())='" + escaped + "']",
+        document, null, 7, null
+      );
+      for (var i = nodes.snapshotLength - 1; i >= 0; i--) {
+        var el = nodes.snapshotItem(i);
+        if (!el) continue;
+        var rect = el.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) continue;
+        var x = rect.left + rect.width / 2;
+        var y = rect.top + rect.height / 2;
+        var opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+        el.dispatchEvent(new MouseEvent('mousedown', opts));
+        el.dispatchEvent(new MouseEvent('mouseup', opts));
+        el.dispatchEvent(new MouseEvent('click', opts));
+        return true;
+      }
+    } catch(e) {}
+  }
+  return false;
+}
+
+function _xhsFillSmsCode(code) {
+  var inputs = Array.from(document.querySelectorAll('input'));
+  for (var i = 0; i < inputs.length; i++) {
+    var el = inputs[i];
+    if (el.offsetParent == null && el.getBoundingClientRect().width <= 0) continue;
+    var placeholder = (el.placeholder || '').toLowerCase();
+    var maxLen = el.maxLength;
+    var isCodeInput = placeholder.indexOf('验证码') !== -1 || placeholder.indexOf('code') !== -1 ||
+      (maxLen >= 4 && maxLen <= 8 && el.type !== 'tel' && el.type !== 'email');
+    if (!isCodeInput) continue;
+    el.focus();
+    try {
+      var desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+      if (desc && desc.set) desc.set.call(el, code);
+      else el.value = code;
+    } catch (e) { el.value = code; }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  return false;
+}
+
+function _xhsClickLogin() {
+  var btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+  for (var i = 0; i < btns.length; i++) {
+    var btn = btns[i];
+    if (btn.offsetParent == null || btn.disabled) continue;
+    var text = (btn.textContent || btn.innerText || '').trim();
+    if (text === '登录' || text === '立即登录' || text === '登录/注册' || text === '验证登录' || text === '一键登录') {
+      btn.click();
+      return true;
+    }
+  }
+  return false;
+}
+
+// ---- 自动登录主流程 ----
+function doAutoLogin() {
+  var phone = smsPhone;
+  var codeUrl = smsCodeUrl;
+  if (!phone) {
+    setAccountStatus('请先填写手机号并保存', 'err');
+    return;
+  }
+  if (!codeUrl) {
+    setAccountStatus('请先填写接码链接并保存', 'err');
+    return;
+  }
+
+  setAccountStatus('正在导航到小红书…', 'ing');
+  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+    var tab = tabs[0];
+    if (!tab || !tab.id) {
+      setAccountStatus('无法获取当前标签页', 'err');
+      return;
+    }
+    var tabId = tab.id;
+    var tabUrl = (tab.url || '').toLowerCase();
+    var isXhsTab = tabUrl.indexOf('xiaohongshu.com') !== -1 || tabUrl.indexOf('rednote.com') !== -1;
+    var loginTargetUrl = isXhsTab
+      ? (tabUrl.indexOf('rednote.com') !== -1 ? 'https://www.rednote.com' : 'https://www.xiaohongshu.com')
+      : 'https://www.xiaohongshu.com';
+
+    chrome.tabs.update(tabId, { url: loginTargetUrl }, function() {
+      setAccountStatus('等待页面加载…', 'ing');
+      waitForTabComplete(tabId).then(function() {
+        setTimeout(function() {
+          setAccountStatus('填入手机号…', 'ing');
+          chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            world: 'MAIN',
+            func: _xhsFillPhone,
+            args: [phone]
+          }, function(results) {
+            if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) {
+              setAccountStatus('未找到手机号输入框，请确认页面为登录状态', 'err');
+              return;
+            }
+            setTimeout(function() {
+              setAccountStatus('点击发送验证码…', 'ing');
+              chrome.scripting.executeScript({
+                target: { tabId: tabId },
+                world: 'MAIN',
+                func: _xhsClickSendSms,
+                args: []
+              }, function(results) {
+                if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) {
+                  setAccountStatus('未找到发送验证码按钮', 'err');
+                  return;
+                }
+                if (btnFetchSmsCode) btnFetchSmsCode.click();
+                var maxPoll = 40;
+                var pollCount = 0;
+                function pollSmsCode() {
+                  if (pollCount >= maxPoll) {
+                    setAccountStatus('接码超时（120 秒），请检查接码链接', 'err');
+                    return;
+                  }
+                  pollCount++;
+                  setAccountStatus('等待接码中… (' + pollCount + '/' + maxPoll + ')', 'ing');
+                  fetch(codeUrl)
+                    .then(function(res) { return res.text(); })
+                    .then(function(text) {
+                      var match = (text || '').match(/\bcode\b[^0-9]*(\d+)/i);
+                      var code = match ? match[1] : '';
+                      var raw = (text || '').trim().slice(0, 300) || '（响应为空）';
+                      showSmsCodeResult(raw + '\n' + (match ? ('验证码：' + code) : '未抽取到验证码'), false);
+                      if (!code) {
+                        setTimeout(pollSmsCode, 3000);
+                        return;
+                      }
+                      setAccountStatus('收到验证码：' + code + '，正在填入…', 'ing');
+                      chrome.scripting.executeScript({
+                        target: { tabId: tabId },
+                        world: 'MAIN',
+                        func: _xhsFillSmsCode,
+                        args: [code]
+                      }, function(results) {
+                        if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) {
+                          setAccountStatus('验证码填入失败，请手动填写', 'err');
+                          return;
+                        }
+                        setTimeout(function() {
+                          setAccountStatus('点击登录按钮…', 'ing');
+                          chrome.scripting.executeScript({
+                            target: { tabId: tabId },
+                            world: 'MAIN',
+                            func: _xhsClickLogin,
+                            args: []
+                          }, function(results) {
+                            if (chrome.runtime.lastError) {
+                              setAccountStatus('登录按钮点击失败', 'err');
+                              return;
+                            }
+                            var clicked = results && results[0] && results[0].result;
+                            if (clicked) {
+                              setTimeout(function() { setAccountStatus('登录操作完成', 'ok'); }, 2500);
+                            } else {
+                              setAccountStatus('未找到登录按钮，可能已自动登录', 'ok');
+                            }
+                          });
+                        }, 800);
+                      });
+                    })
+                    .catch(function() { setTimeout(pollSmsCode, 3000); });
+                }
+                setTimeout(pollSmsCode, 3000);
+              });
+            }, 600);
+          });
+        }, 5000);
+      });
+    });
+  });
+}
+
+if (btnAutoLogout) btnAutoLogout.addEventListener('click', doAutoLogout);
+if (btnAutoLogin) btnAutoLogin.addEventListener('click', doAutoLogin);
+
+// ========== 以下为原有标签页监听 ==========
+
 chrome.tabs.onActivated.addListener(function() {
   getActiveTabUrl().then(updateViewByUrl);
 });

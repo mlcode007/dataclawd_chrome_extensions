@@ -308,6 +308,25 @@
     .creator-avatar { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; display: block; }
     .creator-jump-btn { text-align: center; text-decoration: none; margin-bottom: 10px; }
     .creator-jump-btn[href="#"] { display: none !important; }
+    .account-action-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .account-action-row .btn-primary,
+    .account-action-row .btn-secondary {
+      flex: 1;
+      margin-bottom: 0;
+    }
+    .account-status {
+      min-height: 1.4em;
+      font-size: 12px;
+      color: #666;
+      padding: 4px 0 2px;
+    }
+    .account-status.ok { color: #2e7d32; }
+    .account-status.err { color: #c62828; }
+    .account-status.ing { color: #1565c0; }
   </style>
 </head>
 <body>
@@ -343,7 +362,17 @@
       <label>接码链接</label>
       <div class="keyword-add-row">
         <input type="text" id="smsCodeUrlInput" placeholder="接码平台或接口链接" />
+        <button type="button" class="btn-secondary" id="btnFetchSmsCode" style="flex-shrink:0;white-space:nowrap">测试</button>
       </div>
+      <div id="smsCodeResult" style="display:none;margin-top:4px;padding:6px 10px;font-size:13px;background:#f0f7ff;border-radius:6px;border-left:3px solid #e74c3c;word-break:break-all;white-space:pre-wrap;color:#333;"></div>
+    </div>
+    <div class="keyword-config">
+      <label>账号管理</label>
+      <div class="account-action-row">
+        <button type="button" class="btn-secondary" id="btnAutoLogout">自动退出</button>
+        <button type="button" class="btn-primary" id="btnAutoLogin">自动登录</button>
+      </div>
+      <div class="account-status" id="accountStatus"></div>
     </div>
     <button type="button" class="btn-primary" id="btnGetUrl">获取当前页面 URL</button>
     <div class="url-display" id="urlDisplay" style="display: none;"></div>

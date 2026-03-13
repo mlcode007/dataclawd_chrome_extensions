@@ -14,10 +14,26 @@ chrome.runtime.onInstalled.addListener(function() {
   });
 });
 
+// 浏览器启动时：若缓存已勾选「后台执行」，则自动启动自动任务
+chrome.runtime.onStartup.addListener(function() {
+  chrome.storage.local.get(['autoTaskRunInBackground'], function(o) {
+    if (o.autoTaskRunInBackground) {
+      backgroundAutoTaskAbort = false;
+      chrome.storage.local.set({ autoTaskRunning: true }, function() {
+        runBackgroundAutoTaskLoop();
+      });
+    }
+  });
+});
+
 // 回传请求由 background 发起，避免 content 页面环境下的混合内容/CORS 导致 Failed to fetch
 var CALLBACK_TIMEOUT_MS = 60000;
 chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
   if (msg.type === 'startAutoTask') {
+    if (backgroundAutoTaskRunning) {
+      sendResponse({ ok: true });
+      return true;
+    }
     backgroundAutoTaskAbort = false;
     runBackgroundAutoTaskLoop();
     sendResponse({ ok: true });
@@ -54,11 +70,26 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
 
 // ---------- 后台自动任务（与 panel 逻辑一致，关闭侧边栏后继续运行） ----------
 var backgroundAutoTaskAbort = false;
+var backgroundAutoTaskRunning = false;
 var SEARCH_BASE_URL = 'https://www.xiaohongshu.com/search_result';
 var REDNOTE_SEARCH_BASE_URL = 'https://www.rednote.com/search_result';
 
 function setAutoTaskStatusInStorage(text) {
   chrome.storage.local.set({ autoTaskStatus: text || '' });
+}
+
+function pushAutoTaskLogLine(text) {
+  if (!text) return;
+  chrome.storage.local.set({ autoTaskLogLine: { time: Date.now(), text: text } });
+}
+
+function sendCountdownToPage(show, text, seconds) {
+  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+    if (!tabs[0] || !tabs[0].id) return;
+    try {
+      chrome.tabs.sendMessage(tabs[0].id, { type: 'dataCrawlerCountdown', show: show, text: text, seconds: seconds });
+    } catch (e) {}
+  });
 }
 
 function getApiHostFromStorage() {
@@ -321,7 +352,11 @@ function applyPublishTimeFilterAfterSearch(tabId, optionText) {
 }
 
 function runBackgroundAutoTaskLoop() {
+  backgroundAutoTaskRunning = true;
   function done() {
+    backgroundAutoTaskRunning = false;
+    pushAutoTaskLogLine('已关闭');
+    sendCountdownToPage(false);
     chrome.storage.local.set({ autoTaskRunning: false, autoTaskStatus: '已关闭' });
     chrome.storage.local.remove('currentKeywordTask');
   }
@@ -340,6 +375,8 @@ function runBackgroundAutoTaskLoop() {
       return;
     }
     setAutoTaskStatusInStorage('正在获取任务…');
+    pushAutoTaskLogLine('正在获取任务…');
+    sendCountdownToPage(true, '请求关键词…', 0);
     fetchKeywordTaskInBackground()
       .then(function(result) {
         if (backgroundAutoTaskAbort) { done(); return; }
@@ -347,12 +384,16 @@ function runBackgroundAutoTaskLoop() {
         var taskInfos = result.taskInfos || [];
         if (!keywords.length) {
           setAutoTaskStatusInStorage('暂无任务，15 秒后重试');
+          pushAutoTaskLogLine('暂无任务，15 秒后重试');
+          sendCountdownToPage(true, '请求关键词', 15);
           setTimeout(loop, 15000);
           return;
         }
         getTab().then(function(tab) {
           if (!tab || !tab.id) {
             setAutoTaskStatusInStorage('无法获取当前标签页');
+            pushAutoTaskLogLine('无法获取当前标签页');
+            sendCountdownToPage(true, '请求关键词', 5);
             setTimeout(loop, 5000);
             return;
           }
@@ -366,6 +407,8 @@ function runBackgroundAutoTaskLoop() {
             var keyword = keywords[index];
             var statusPrefix = '执行中 ' + (index + 1) + '/' + total + '：' + keyword;
             setAutoTaskStatusInStorage(statusPrefix);
+            pushAutoTaskLogLine(statusPrefix);
+            sendCountdownToPage(true, '执行中 ' + (index + 1) + '/' + total, 0);
             var kwInfo = taskInfos[index] || taskInfos[0] || { Keywords: keyword };
             chrome.storage.local.set({ currentKeywordTask: kwInfo }, function() {
               chrome.scripting.executeScript({
@@ -378,6 +421,8 @@ function runBackgroundAutoTaskLoop() {
                 var ok = results && results[0] && results[0].result === true;
                 if (!ok && index === 0) {
                   setAutoTaskStatusInStorage('未找到搜索框，请先打开小红书搜索页');
+                  pushAutoTaskLogLine('未找到搜索框，请先打开小红书搜索页');
+                  sendCountdownToPage(false);
                   done();
                   return;
                 }
@@ -387,8 +432,25 @@ function runBackgroundAutoTaskLoop() {
                     index++;
                     getRandomIntervalMsFromStorage().then(function(ms) {
                       if (backgroundAutoTaskAbort) { done(); return; }
-                      setAutoTaskStatusInStorage('等待下一词 · ' + Math.ceil(ms / 1000) + ' 秒');
-                      setTimeout(function() { doNext(); }, ms);
+                      var sec = Math.ceil(ms / 1000);
+                      var waitText = '等待下一词 · ' + sec + ' 秒';
+                      setAutoTaskStatusInStorage(waitText);
+                      pushAutoTaskLogLine(waitText);
+                      sendCountdownToPage(true, '请求关键词', sec);
+                      var remainSec = sec;
+                      var countdownTimer = setInterval(function() {
+                        if (backgroundAutoTaskAbort) { clearInterval(countdownTimer); return; }
+                        remainSec--;
+                        if (remainSec <= 0) {
+                          clearInterval(countdownTimer);
+                          return;
+                        }
+                        setAutoTaskStatusInStorage('等待下一词 · ' + remainSec + ' 秒');
+                      }, 1000);
+                      setTimeout(function() {
+                        if (countdownTimer) clearInterval(countdownTimer);
+                        doNext();
+                      }, ms);
                     });
                   };
                   if (filterVal) {
@@ -413,7 +475,10 @@ function runBackgroundAutoTaskLoop() {
               return;
             }
             var keyword = keywords[index];
-            setAutoTaskStatusInStorage('执行中 ' + (index + 1) + '/' + total + '：' + keyword);
+            var doNextPrefix = '执行中 ' + (index + 1) + '/' + total + '：' + keyword;
+            setAutoTaskStatusInStorage(doNextPrefix);
+            pushAutoTaskLogLine(doNextPrefix);
+            sendCountdownToPage(true, '执行中 ' + (index + 1) + '/' + total, 0);
             if (index === 0 && !isSearchPage) {
               chrome.tabs.update(tab.id, { url: getSearchBaseUrl(tabUrl) }, function() {
                 waitForTabComplete(tab.id).then(function() {
@@ -431,7 +496,10 @@ function runBackgroundAutoTaskLoop() {
       .catch(function(err) {
         if (backgroundAutoTaskAbort) { done(); return; }
         var msg = (err && err.message) ? err.message : String(err);
-        setAutoTaskStatusInStorage('获取任务失败: ' + msg + '，15 秒后重试');
+        var errText = '获取任务失败: ' + msg + '，15 秒后重试';
+        setAutoTaskStatusInStorage(errText);
+        pushAutoTaskLogLine(errText);
+        sendCountdownToPage(true, '请求关键词', 15);
         setTimeout(loop, 15000);
       });
   }

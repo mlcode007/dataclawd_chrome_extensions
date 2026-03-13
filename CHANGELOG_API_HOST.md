@@ -54,3 +54,11 @@
 
 - **.keyword-add-row**：增加 `align-items: center`，使输入框与右侧按钮垂直居中对齐。
 - **.keyword-add-row .btn-secondary**：`margin-bottom: 0`、`width: auto`、`flex-shrink: 0`、`min-height: 38px`、`box-sizing: border-box`，使「保存」按钮与输入框同高、不占满行、与输入框对齐。
+
+---
+
+## 7. 手机号与接码链接（2026-03-12）
+
+- **侧栏**：在接口根地址下方增加「手机号」「接码链接」两个输入框（`id="smsPhoneInput"`、`id="smsCodeUrlInput"`），与接口根地址共用「保存」按钮。
+- **存储**：键名 `smsPhone`、`smsCodeUrl`，与 `apiHost` 一并由 `loadApiHost()` 读取、`saveApiHost()` 写入 `chrome.storage.local`。
+- **失焦保存**：手机号、接码链接输入框绑定 `blur` 事件，光标移出时自动调用 `saveApiHost()`，将当前三项配置同步到本地缓存，无需再点保存。

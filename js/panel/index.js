@@ -407,6 +407,7 @@ if (btnExecuteSearch) btnExecuteSearch.addEventListener('click', runExecuteSearc
 
 // ---------- 接口任务自动执行 ----------
 var autoTaskStatusEl = document.getElementById('autoTaskStatus');
+var autoTaskCountdownTextEl = document.getElementById('autoTaskCountdownText');
 var autoTaskCallbackLogEl = document.getElementById('autoTaskCallbackLog');
 var CALLBACK_LOG_MAX = 50;
 var btnAutoTaskStart = document.getElementById('btnAutoTaskStart');
@@ -441,6 +442,30 @@ function loadAutoTaskRunInBackground() {
 function saveAutoTaskRunInBackground() {
   var v = !!(autoTaskRunInBackgroundEl && autoTaskRunInBackgroundEl.checked);
   chrome.storage.local.set({ autoTaskRunInBackground: v });
+  // 勾选「后台执行」时自动启动自动任务（若已在运行则不再重复启动）
+  if (v) {
+    chrome.storage.local.get(['autoTaskRunning'], function(o) {
+      if (o.autoTaskRunning) return;
+      chrome.storage.local.set({ autoTaskRunning: true }, function() {
+        chrome.runtime.sendMessage({ type: 'startAutoTask' }, function() {
+          if (chrome.runtime.lastError) {
+            var errMsg = '后台启动失败：' + (chrome.runtime.lastError.message || '');
+            if (autoTaskStatusEl) autoTaskStatusEl.textContent = errMsg;
+            if (autoTaskCountdownTextEl) autoTaskCountdownTextEl.textContent = errMsg;
+            chrome.storage.local.set({ autoTaskRunning: false });
+            autoTaskRunning = false;
+            updateAutoTaskButtons();
+            return;
+          }
+          autoTaskRunning = true;
+          updateAutoTaskButtons();
+          var startedMsg = '已在后台启动（可关闭侧边栏）';
+          if (autoTaskStatusEl) autoTaskStatusEl.textContent = startedMsg;
+          if (autoTaskCountdownTextEl) autoTaskCountdownTextEl.textContent = startedMsg;
+        });
+      });
+    });
+  }
 }
 
 loadAutoTaskInterval();
@@ -463,14 +488,32 @@ function syncAutoTaskStateFromStorage() {
     if (o.autoTaskRunning === true) {
       autoTaskRunning = true;
       updateAutoTaskButtons();
-      if (o.autoTaskStatus && autoTaskStatusEl) autoTaskStatusEl.textContent = o.autoTaskStatus;
+      var statusText = o.autoTaskStatus || '';
+      if (autoTaskStatusEl) autoTaskStatusEl.textContent = statusText;
+      if (autoTaskCountdownTextEl) autoTaskCountdownTextEl.textContent = statusText;
     }
   });
 }
 syncAutoTaskStateFromStorage();
 
 function setAutoTaskStatus(text) {
-  if (autoTaskStatusEl) autoTaskStatusEl.textContent = text || '';
+  var t = text || '';
+  if (autoTaskStatusEl) autoTaskStatusEl.textContent = t;
+  if (autoTaskCountdownTextEl) autoTaskCountdownTextEl.textContent = t;
+}
+
+function sendCountdownToPage(show, text, seconds) {
+  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+    if (!tabs[0] || !tabs[0].id) return;
+    try {
+      chrome.tabs.sendMessage(tabs[0].id, { type: 'dataCrawlerCountdown', show: show, text: text, seconds: seconds });
+    } catch (e) {}
+  });
+}
+
+function pushAutoTaskLogLine(text) {
+  if (!text) return;
+  chrome.storage.local.set({ autoTaskLogLine: { time: Date.now(), text: text } });
 }
 
 function getTaskApiUrl() {
@@ -693,6 +736,8 @@ function runAutoTaskLoop() {
   updateAutoTaskButtons();
 
   function done() {
+    pushAutoTaskLogLine('已关闭');
+    sendCountdownToPage(false);
     autoTaskRunning = false;
     if (autoTaskCountdownTimer) {
       clearInterval(autoTaskCountdownTimer);
@@ -714,6 +759,8 @@ function runAutoTaskLoop() {
   function loop() {
     if (autoTaskAbort) { done(); return; }
     setAutoTaskStatus('正在获取任务…');
+    pushAutoTaskLogLine('正在获取任务…');
+    sendCountdownToPage(true, '请求关键词…', 0);
     fetchKeywordTask()
       .then(function(result) {
         if (autoTaskAbort) { done(); return; }
@@ -721,12 +768,16 @@ function runAutoTaskLoop() {
         var taskInfos = result.taskInfos || [];
         if (!keywords.length) {
           setAutoTaskStatus('暂无任务，15 秒后重试');
+          pushAutoTaskLogLine('暂无任务，15 秒后重试');
+          sendCountdownToPage(true, '请求关键词', 15);
           setTimeout(loop, 15000);
           return;
         }
         getTab().then(function(tab) {
         if (!tab || !tab.id) {
           setAutoTaskStatus('无法获取当前标签页');
+          pushAutoTaskLogLine('无法获取当前标签页');
+          sendCountdownToPage(true, '请求关键词', 5);
           setTimeout(loop, 5000);
           return;
         }
@@ -739,6 +790,8 @@ function runAutoTaskLoop() {
           var keyword = keywords[index];
           var statusPrefix = '执行中 ' + (index + 1) + '/' + total + '：' + keyword;
           setAutoTaskStatus(statusPrefix);
+          pushAutoTaskLogLine(statusPrefix);
+          sendCountdownToPage(true, '执行中 ' + (index + 1) + '/' + total, 0);
           var kwInfo = taskInfos[index] || taskInfos[0] || { Keywords: keyword };
           chrome.storage.local.set({ currentKeywordTask: kwInfo }, function() {
           chrome.scripting.executeScript({
@@ -751,6 +804,8 @@ function runAutoTaskLoop() {
             var ok = results && results[0] && results[0].result === true;
             if (!ok && index === 0) {
               setAutoTaskStatus('未找到搜索框，请先打开小红书搜索页');
+              pushAutoTaskLogLine('未找到搜索框，请先打开小红书搜索页');
+              sendCountdownToPage(false);
               done();
               return;
             }
@@ -758,7 +813,11 @@ function runAutoTaskLoop() {
             var filterVal = publishTimeFilterEl ? (publishTimeFilterEl.value || '').trim() : '';
             var thenWait = function() {
               index++;
-              waitRandomWithCountdown(getRandomIntervalMs()).then(doNext);
+              var ms = getRandomIntervalMs();
+              var waitText = '等待下一词 · ' + Math.ceil(ms / 1000) + ' 秒';
+              pushAutoTaskLogLine(waitText);
+              sendCountdownToPage(true, '请求关键词', Math.ceil(ms / 1000));
+              waitRandomWithCountdown(ms).then(doNext);
             };
             if (filterVal) {
               setAutoTaskStatus(statusPrefix + ' · 应用筛选「' + filterVal + '」');
@@ -782,7 +841,10 @@ function runAutoTaskLoop() {
             return;
           }
           var keyword = keywords[index];
-          setAutoTaskStatus('执行中 ' + (index + 1) + '/' + total + '：' + keyword);
+          var doNextPrefix = '执行中 ' + (index + 1) + '/' + total + '：' + keyword;
+          setAutoTaskStatus(doNextPrefix);
+          pushAutoTaskLogLine(doNextPrefix);
+          sendCountdownToPage(true, '执行中 ' + (index + 1) + '/' + total, 0);
           if (index === 0 && !isSearchPage) {
             chrome.tabs.update(tab.id, { url: getSearchBaseUrl(tabUrl) }, function() {
               waitForTabComplete(tab.id).then(function() {
@@ -800,7 +862,10 @@ function runAutoTaskLoop() {
   .catch(function(err) {
     if (autoTaskAbort) { done(); return; }
     var msg = (err && err.message) ? err.message : String(err);
-    setAutoTaskStatus('获取任务失败: ' + msg + '，15 秒后重试');
+    var errText = '获取任务失败: ' + msg + '，15 秒后重试';
+    setAutoTaskStatus(errText);
+    pushAutoTaskLogLine(errText);
+    sendCountdownToPage(true, '请求关键词', 15);
     console.warn('[DataCrawler] 获取任务异常', err);
     setTimeout(loop, 15000);
   });
@@ -848,6 +913,10 @@ function bindAutoTaskButtons() {
     btnStop.onclick = function() {
       autoTaskAbort = true;
       chrome.runtime.sendMessage({ type: 'stopAutoTask' });
+      autoTaskRunning = false;
+      chrome.storage.local.set({ autoTaskRunning: false });
+      updateAutoTaskButtons();
+      setAutoTaskStatus('已关闭');
     };
   }
 }
@@ -864,8 +933,14 @@ const searchResultTableWrap = document.getElementById('searchResultTableWrap');
 const creatorListText = document.getElementById('creatorListText');
 const creatorTableWrap = document.getElementById('creatorTableWrap');
 
-// 侧边栏关闭/隐藏时清空大块 DOM 与文本，释放引用便于 GC 回收内存
+// 侧边栏关闭/隐藏时清空大块 DOM 与文本，释放引用便于 GC 回收内存；若未勾选「后台执行」则关闭自动任务
 window.addEventListener('pagehide', function() {
+  chrome.storage.local.get(['autoTaskRunInBackground'], function(o) {
+    if (!o.autoTaskRunInBackground) {
+      chrome.runtime.sendMessage({ type: 'stopAutoTask' });
+      chrome.storage.local.set({ autoTaskRunning: false });
+    }
+  });
   if (searchResultTableWrap) searchResultTableWrap.innerHTML = '';
   if (searchResultText) searchResultText.value = '';
   if (creatorTableWrap) creatorTableWrap.innerHTML = '';
@@ -1183,12 +1258,28 @@ chrome.storage.onChanged.addListener(function(changes, areaName) {
       autoTaskStatusEl.textContent = changes.autoTaskStatus.newValue;
     }
   }
-  if (changes.autoTaskStatus && changes.autoTaskStatus.newValue != null && autoTaskStatusEl) {
-    autoTaskStatusEl.textContent = changes.autoTaskStatus.newValue;
+  if (changes.autoTaskStatus && changes.autoTaskStatus.newValue != null) {
+    var v = changes.autoTaskStatus.newValue;
+    if (autoTaskStatusEl) autoTaskStatusEl.textContent = v;
+    if (autoTaskCountdownTextEl) autoTaskCountdownTextEl.textContent = v;
   }
   if (changes[KEYWORD_STORAGE_KEY] && Array.isArray(changes[KEYWORD_STORAGE_KEY].newValue)) {
     pluginSearchKeywords = changes[KEYWORD_STORAGE_KEY].newValue;
     renderKeywordList();
+  }
+  if (changes.autoTaskLogLine && changes.autoTaskLogLine.newValue) {
+    var entry = changes.autoTaskLogLine.newValue;
+    if (autoTaskCallbackLogEl && entry.text) {
+      var time = new Date(entry.time).toLocaleTimeString('zh-CN', { hour12: false });
+      var line = document.createElement('div');
+      line.className = 'log-info';
+      line.textContent = time + ' ' + entry.text;
+      autoTaskCallbackLogEl.appendChild(line);
+      while (autoTaskCallbackLogEl.children.length > CALLBACK_LOG_MAX) {
+        autoTaskCallbackLogEl.removeChild(autoTaskCallbackLogEl.firstChild);
+      }
+      autoTaskCallbackLogEl.scrollTop = autoTaskCallbackLogEl.scrollHeight;
+    }
   }
   if (changes.autoTaskCallbackStatus && changes.autoTaskCallbackStatus.newValue) {
     var v = changes.autoTaskCallbackStatus.newValue;

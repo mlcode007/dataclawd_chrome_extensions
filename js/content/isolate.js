@@ -205,7 +205,11 @@ window.addEventListener('message', function(event) {
           var data = result && result.data;
           var attempt = result && result.attempt;
           var attemptStr = attempt != null ? '（第' + attempt + '次）' : '';
-          var msg = '回传成功' + attemptStr + ' code=' + (data && data.code) + ' message=' + (data && data.message || '');
+          var msg = '回传成功' + attemptStr;
+          if (data && (data.code != null || (data.message != null && data.message !== ''))) {
+            msg += ' code=' + (data.code != null ? String(data.code) : '-');
+            msg += ' message=' + (data.message != null && data.message !== '' ? String(data.message) : '-');
+          }
           console.log('[DataCrawler] 搜索数据回传:', msg, result);
           chrome.storage.local.set({ autoTaskCallbackStatus: { success: true, message: msg, time: Date.now() } });
         })
@@ -243,5 +247,52 @@ window.addEventListener('message', function(event) {
       }
       chrome.storage.local.set({ creatorListPages: pages, creatorListResult: JSON.stringify(obj, null, 2) });
     });
+  }
+});
+
+// ---------- 自动任务时页面左上角「请求关键词」倒计时浮层 ----------
+var dataCrawlerCountdownIntervalId = null;
+chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
+  if (msg.type !== 'dataCrawlerCountdown') return;
+  var el = document.getElementById('data-crawler-countdown-box');
+  if (msg.show) {
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'data-crawler-countdown-box';
+      el.style.cssText = 'position:fixed;top:14px;left:14px;z-index:2147483647;padding:10px 14px;border-radius:10px;background:rgba(0,0,0,0.82);color:#fff;font-size:13px;font-family:system-ui,-apple-system,sans-serif;box-shadow:0 2px 12px rgba(0,0,0,0.25);pointer-events:none;line-height:1.4;';
+      document.body.appendChild(el);
+    }
+    if (dataCrawlerCountdownIntervalId) {
+      clearInterval(dataCrawlerCountdownIntervalId);
+      dataCrawlerCountdownIntervalId = null;
+    }
+    var text = (msg.text || '请求关键词').trim();
+    var sec = typeof msg.seconds === 'number' ? msg.seconds : 0;
+    function update() {
+      if (sec > 0) {
+        el.textContent = text + ' · ' + sec + ' 秒';
+      } else {
+        el.textContent = text;
+      }
+    }
+    update();
+    if (typeof msg.seconds === 'number' && msg.seconds > 0) {
+      dataCrawlerCountdownIntervalId = setInterval(function() {
+        sec--;
+        if (sec <= 0) {
+          clearInterval(dataCrawlerCountdownIntervalId);
+          dataCrawlerCountdownIntervalId = null;
+          el.textContent = text;
+          return;
+        }
+        el.textContent = text + ' · ' + sec + ' 秒';
+      }, 1000);
+    }
+  } else {
+    if (dataCrawlerCountdownIntervalId) {
+      clearInterval(dataCrawlerCountdownIntervalId);
+      dataCrawlerCountdownIntervalId = null;
+    }
+    if (el) el.remove();
   }
 });

@@ -233,6 +233,13 @@
       margin-top: 6px;
       font-size: 12px;
     }
+    .countdown-above-log {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #1565c0;
+      min-height: 1.2em;
+    }
+    .countdown-above-log .countdown-label { color: #666; margin-right: 4px; }
     .callback-log-wrap {
       margin-top: 8px;
     }
@@ -253,6 +260,8 @@
     }
     .callback-log .log-ok { color: #2e7d32; }
     .callback-log .log-err { color: #c62828; }
+    .callback-log .log-info { color: #1565c0; }
+    .operation-log-label { font-size: 12px; color: #666; display: block; margin-top: 8px; margin-bottom: 4px; }
     .search-result-text {
       width: 100%;
       min-height: 120px;
@@ -382,6 +391,10 @@
           <button type="button" class="btn-secondary btn-auto-stop" id="btnAutoTaskStop" disabled>关闭自动任务</button>
         </div>
         <div class="keyword-execute-status" id="autoTaskStatus"></div>
+        <div class="countdown-above-log" id="autoTaskCountdownWrap">
+          <span class="countdown-label">请求关键词倒计时：</span>
+          <span id="autoTaskCountdownText"></span>
+        </div>
         <div class="callback-log-wrap">
           <label>回传日志</label>
           <div class="callback-log" id="autoTaskCallbackLog"></div>
@@ -389,7 +402,8 @@
       </div>
       <button type="button" class="btn-secondary" id="btnClearTable">清空表格数据</button>
       <div class="search-table-wrap" id="searchResultTableWrap" style="display: none;"></div>
-      <textarea class="search-result-text" id="searchResultText" readonly placeholder="在小红书搜索页进行搜索后，此处会显示接口返回的 JSON"></textarea>
+      <label class="operation-log-label">操作日志</label>
+      <textarea class="search-result-text" id="searchResultText" readonly placeholder="搜索接口返回的 JSON、操作记录等"></textarea>
     </div>
     <div class="search-result-section creator-section" id="creatorSection">
       <label>达人列表（user/profile 页）</label>

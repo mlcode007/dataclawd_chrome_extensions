@@ -78,3 +78,5 @@ npm run pack  # 或：bash scripts/pack.sh
 | 2026-03-07   | 打包时用 Terser 压缩并混淆 JS：pack.sh 在 rsync 后对 dist/extension/js 下所有 .js 执行 terser --compress --mangle，产物体积更小且变量名缩短，不触犯 CSP |
 | 2026-03-07   | 移除敏感 URL：接口根地址改为占位符 `https://your-api.example/`，manifest 使用 `https://*/*` 以支持用户配置任意接口；CHANGELOG 仅保留描述性说明 |
 | 2026-03-07   | 接口相关命名统一为通用名：apiHost、api_host_default、api/ 路径等，CHANGELOG_ELICE 重命名为 CHANGELOG_API_HOST |
+| 2026-03-12   | 侧栏增加「手机号」「接码链接」配置项，与接口根地址共用保存按钮；失焦（blur）时自动写入 chrome.storage.local，同步到本地缓存 |
+| 2026-03-12   | 接口任务自动执行增加「后台执行」复选框：勾选后点击启动自动任务在 background 中运行，关闭侧边栏后继续执行；不勾选保持原逻辑（仅侧边栏打开时执行）。选项持久化 |

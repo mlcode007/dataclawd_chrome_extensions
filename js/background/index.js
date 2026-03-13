@@ -262,9 +262,14 @@ function getKeywordTaskInfos(data) {
   return [];
 }
 
+var API_HOST_PLACEHOLDER = 'https://your-api.example/';
 function fetchKeywordTaskInBackground() {
   return getApiHostFromStorage().then(function(apiHost) {
-    var base = (apiHost || '').replace(/\/?$/, '/') + 'xhs_extension/get_keyword_task';
+    var host = (apiHost || '').trim();
+    if (!host || host === API_HOST_PLACEHOLDER || host.replace(/\/+$/, '') === API_HOST_PLACEHOLDER.replace(/\/+$/, '')) {
+      return Promise.reject(new Error('请先在侧栏配置并保存「接口根地址」'));
+    }
+    var base = host.replace(/\/?$/, '/') + 'xhs_extension/get_keyword_task';
     var url = base + '?trace_id=20260303';
     return fetch(url, { method: 'GET' })
       .then(function(res) {
@@ -526,6 +531,7 @@ function runBackgroundAutoTaskLoop() {
       .catch(function(err) {
         if (backgroundAutoTaskAbort) { done(); return; }
         var msg = (err && err.message) ? err.message : String(err);
+        if (msg === 'Failed to fetch') msg = '网络请求失败（请检查接口地址与网络）';
         var errText = '获取任务失败: ' + msg + '，15 秒后重试';
         setAutoTaskStatusInStorage(errText);
         pushAutoTaskLogLine(errText);

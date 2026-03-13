@@ -881,8 +881,23 @@ function runAutoTaskLoop() {
     });
   }
 
+  var apiHostPlaceholder = 'https://your-api.example/';
+  function isApiHostConfigured(host) {
+    var h = (host || '').trim();
+    if (!h) return false;
+    var norm = h.replace(/\/+$/, '');
+    return norm !== '' && norm !== apiHostPlaceholder.replace(/\/+$/, '');
+  }
   function loop() {
     if (autoTaskAbort) { done(); return; }
+    var host = getApiHost();
+    if (!isApiHostConfigured(host)) {
+      setAutoTaskStatus('请先配置并保存「接口根地址」');
+      pushAutoTaskLogLine('请先配置并保存「接口根地址」');
+      sendCountdownToPage(true, '请求关键词', 15);
+      setTimeout(loop, 15000);
+      return;
+    }
     setAutoTaskStatus('正在获取任务…');
     pushAutoTaskLogLine('正在获取任务…');
     sendCountdownToPage(true, '请求关键词…', 0);
@@ -987,6 +1002,7 @@ function runAutoTaskLoop() {
   .catch(function(err) {
     if (autoTaskAbort) { done(); return; }
     var msg = (err && err.message) ? err.message : String(err);
+    if (msg === 'Failed to fetch') msg = '网络请求失败（请检查接口地址与网络）';
     var errText = '获取任务失败: ' + msg + '，15 秒后重试';
     setAutoTaskStatus(errText);
     pushAutoTaskLogLine(errText);

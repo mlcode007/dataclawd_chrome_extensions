@@ -1528,6 +1528,14 @@ function _xhsClickLogin() {
 
 // ---- 自动登录主流程 ----
 function doAutoLogin() {
+  if (autoTaskRunning) {
+    autoTaskAbort = true;
+    chrome.runtime.sendMessage({ type: 'stopAutoTask' });
+    autoTaskRunning = false;
+    chrome.storage.local.set({ autoTaskRunning: false });
+    updateAutoTaskButtons();
+    setAutoTaskStatus('已关闭（自动登录触发）');
+  }
   var phone = smsPhone;
   var codeUrl = smsCodeUrl;
   if (!phone) {

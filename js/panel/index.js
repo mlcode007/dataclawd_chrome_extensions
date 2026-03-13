@@ -86,9 +86,15 @@ var executeCountdownTimer = null; // 倒计时定时器，便于清理
 var API_HOST_STORAGE_KEY = 'apiHost';
 var SMS_PHONE_STORAGE_KEY = 'smsPhone';
 var SMS_CODE_URL_STORAGE_KEY = 'smsCodeUrl';
+var ACCOUNT_LIST_STORAGE_KEY = 'accountList';
+var SELECTED_ACCOUNT_INDEX_KEY = 'selectedAccountIndex';
 var apiHost = '';
 var smsPhone = '';
 var smsCodeUrl = '';
+/** 登录账号列表，每项 { phone, codeUrl }；自动登录时使用选中的账号 */
+var accountList = [];
+/** 当前选中用于自动登录的账号索引 */
+var selectedAccountIndex = 0;
 
 function getApiHostDefault() {
   var m = chrome.runtime.getManifest();
@@ -101,17 +107,23 @@ function getApiHost() {
 }
 
 function loadApiHost() {
-  chrome.storage.local.get([API_HOST_STORAGE_KEY, SMS_PHONE_STORAGE_KEY, SMS_CODE_URL_STORAGE_KEY], function(o) {
+  chrome.storage.local.get([API_HOST_STORAGE_KEY, SMS_PHONE_STORAGE_KEY, SMS_CODE_URL_STORAGE_KEY, ACCOUNT_LIST_STORAGE_KEY, SELECTED_ACCOUNT_INDEX_KEY], function(o) {
     var v = (o[API_HOST_STORAGE_KEY] || '').trim();
     apiHost = v || getApiHostDefault();
     var input = document.getElementById('apiHostInput');
     if (input) input.value = apiHost;
     smsPhone = (o[SMS_PHONE_STORAGE_KEY] || '').trim();
     smsCodeUrl = (o[SMS_CODE_URL_STORAGE_KEY] || '').trim();
-    var phoneEl = document.getElementById('smsPhoneInput');
-    if (phoneEl) phoneEl.value = smsPhone;
-    var urlEl = document.getElementById('smsCodeUrlInput');
-    if (urlEl) urlEl.value = smsCodeUrl;
+    var list = o[ACCOUNT_LIST_STORAGE_KEY];
+    if (Array.isArray(list) && list.length > 0) {
+      accountList = list.map(function(item) { return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim() }; });
+      selectedAccountIndex = Math.min(Math.max(0, parseInt(o[SELECTED_ACCOUNT_INDEX_KEY], 10) || 0), accountList.length - 1);
+    } else {
+      accountList = [{ phone: smsPhone, codeUrl: smsCodeUrl }];
+      selectedAccountIndex = 0;
+      chrome.storage.local.set({ accountList: accountList, selectedAccountIndex: 0 });
+    }
+    if (typeof renderAccountList === 'function') renderAccountList();
   });
 }
 
@@ -120,13 +132,117 @@ function saveApiHost() {
   if (!input) return;
   var v = (input.value || '').trim() || getApiHostDefault();
   apiHost = v;
-  var phoneEl = document.getElementById('smsPhoneInput');
-  var urlEl = document.getElementById('smsCodeUrlInput');
-  var phoneVal = (phoneEl && phoneEl.value || '').trim();
-  var urlVal = (urlEl && urlEl.value || '').trim();
-  smsPhone = phoneVal;
-  smsCodeUrl = urlVal;
-  chrome.storage.local.set({ apiHost: v, smsPhone: phoneVal, smsCodeUrl: urlVal });
+  chrome.storage.local.set({ apiHost: v });
+}
+
+function saveAccounts() {
+  chrome.storage.local.set({ accountList: accountList, selectedAccountIndex: selectedAccountIndex });
+}
+
+/** 返回当前选中用于自动登录的账号，无则 null */
+function getSelectedAccount() {
+  if (!accountList.length) return null;
+  var idx = Math.max(0, Math.min(selectedAccountIndex, accountList.length - 1));
+  return accountList[idx];
+}
+
+function renderAccountList() {
+  var container = document.getElementById('accountListContainer');
+  if (!container) return;
+  container.innerHTML = '';
+  accountList.forEach(function(acc, i) {
+    var row = document.createElement('div');
+    row.className = 'account-list-row';
+    var radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'accountSelect';
+    radio.value = String(i);
+    radio.checked = i === selectedAccountIndex;
+    radio.id = 'accountRadio' + i;
+    radio.addEventListener('change', function() {
+      selectedAccountIndex = i;
+      saveAccounts();
+    });
+    var textWrap = document.createElement('label');
+    textWrap.htmlFor = 'accountRadio' + i;
+    textWrap.className = 'account-row-label';
+    textWrap.title = (acc.phone || '') + '\n' + (acc.codeUrl || '');
+    var phoneSpan = document.createElement('span');
+    phoneSpan.className = 'account-row-phone';
+    phoneSpan.textContent = (acc.phone || '').trim() || '（未填手机号）';
+    var urlSpan = document.createElement('span');
+    urlSpan.className = 'account-row-codeurl';
+    urlSpan.textContent = (acc.codeUrl || '').trim() ? '接码：' + (acc.codeUrl || '').trim() : '（未填接码链接）';
+    textWrap.appendChild(phoneSpan);
+    textWrap.appendChild(urlSpan);
+    var testBtn = document.createElement('button');
+    testBtn.type = 'button';
+    testBtn.className = 'btn-secondary btn-account-test';
+    testBtn.textContent = '测试';
+    testBtn.dataset.index = String(i);
+    var delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'btn-remove';
+    delBtn.textContent = '删除';
+    delBtn.dataset.index = String(i);
+    row.appendChild(radio);
+    row.appendChild(textWrap);
+    row.appendChild(testBtn);
+    row.appendChild(delBtn);
+    container.appendChild(row);
+  });
+  container.querySelectorAll('.btn-account-test').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var idx = parseInt(btn.dataset.index, 10);
+      var acc = accountList[idx];
+      if (!acc || !(acc.codeUrl || '').trim()) {
+        if (smsCodeResultEl) { smsCodeResultEl.textContent = '请先填写该账号的接码链接'; smsCodeResultEl.style.display = 'block'; }
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = '获取中…';
+      if (smsCodeResultEl) { smsCodeResultEl.textContent = ''; smsCodeResultEl.style.display = 'block'; }
+      fetch((acc.codeUrl || '').trim())
+        .then(function(res) { return res.text(); })
+        .then(function(text) {
+          btn.disabled = false;
+          btn.textContent = '测试';
+          var raw = (text || '').trim().slice(0, 300) || '（响应为空）';
+          var codeMatch = raw.match(/\bcode\b[^0-9]*(\d+)/i);
+          var display = raw + '\n' + (codeMatch ? ('验证码：' + codeMatch[1]) : '未抽取到验证码');
+          showSmsCodeResult(display, false);
+        })
+        .catch(function(err) {
+          btn.disabled = false;
+          btn.textContent = '测试';
+          showSmsCodeResult('请求失败：' + (err && err.message || String(err)), true);
+        });
+    });
+  });
+  container.querySelectorAll('.btn-remove').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var idx = parseInt(btn.dataset.index, 10);
+      if (idx < 0 || idx >= accountList.length) return;
+      accountList.splice(idx, 1);
+      if (selectedAccountIndex >= accountList.length) selectedAccountIndex = Math.max(0, accountList.length - 1);
+      saveAccounts();
+      renderAccountList();
+    });
+  });
+}
+
+function addAccountFromForm() {
+  var phoneInput = document.getElementById('accountNewPhone');
+  var urlInput = document.getElementById('accountNewCodeUrl');
+  var phone = (phoneInput && phoneInput.value || '').trim();
+  var codeUrl = (urlInput && urlInput.value || '').trim();
+  if (!phone && !codeUrl) return;
+  accountList.push({ phone: phone, codeUrl: codeUrl });
+  selectedAccountIndex = accountList.length - 1;
+  saveAccounts();
+  if (phoneInput) phoneInput.value = '';
+  if (urlInput) urlInput.value = '';
+  renderAccountList();
 }
 
 // 接口任务自动执行（与 Python 一致：用 maa_router/pop 获取完整任务对象，供回传 kwInfo）
@@ -477,12 +593,7 @@ if (autoTaskRunInBackgroundEl) autoTaskRunInBackgroundEl.addEventListener('chang
 loadApiHost();
 var btnSaveApiHost = document.getElementById('btnSaveApiHost');
 if (btnSaveApiHost) btnSaveApiHost.addEventListener('click', function() { saveApiHost(); });
-var smsPhoneInputEl = document.getElementById('smsPhoneInput');
-var smsCodeUrlInputEl = document.getElementById('smsCodeUrlInput');
-if (smsPhoneInputEl) smsPhoneInputEl.addEventListener('blur', function() { saveApiHost(); });
-if (smsCodeUrlInputEl) smsCodeUrlInputEl.addEventListener('blur', function() { saveApiHost(); });
 
-var btnFetchSmsCode = document.getElementById('btnFetchSmsCode');
 var smsCodeResultEl = document.getElementById('smsCodeResult');
 
 function showSmsCodeResult(text, isErr) {
@@ -493,34 +604,8 @@ function showSmsCodeResult(text, isErr) {
   smsCodeResultEl.style.color = isErr ? '#c62828' : '#333';
 }
 
-if (btnFetchSmsCode) {
-  btnFetchSmsCode.addEventListener('click', function() {
-    saveApiHost();
-    var url = (smsCodeUrl || '').trim();
-    if (!url) {
-      showSmsCodeResult('请先填写接码链接', true);
-      return;
-    }
-    btnFetchSmsCode.disabled = true;
-    btnFetchSmsCode.textContent = '获取中…';
-    showSmsCodeResult('');
-    fetch(url)
-      .then(function(res) { return res.text(); })
-      .then(function(text) {
-        btnFetchSmsCode.disabled = false;
-        btnFetchSmsCode.textContent = '测试';
-        var raw = text.trim().slice(0, 300) || '（响应为空）';
-        var codeMatch = raw.match(/\bcode\b[^0-9]*(\d+)/i);
-        var display = raw + '\n' + (codeMatch ? ('验证码：' + codeMatch[1]) : '未抽取到验证码');
-        showSmsCodeResult(display, false);
-      })
-      .catch(function(err) {
-        btnFetchSmsCode.disabled = false;
-        btnFetchSmsCode.textContent = '测试';
-        showSmsCodeResult('请求失败：' + (err && err.message || String(err)), true);
-      });
-  });
-}
+var btnAddAccount = document.getElementById('btnAddAccount');
+if (btnAddAccount) btnAddAccount.addEventListener('click', addAccountFromForm);
 
 // 同步后台任务状态：若在 background 中运行，打开侧边栏时显示正确按钮与状态
 function syncAutoTaskStateFromStorage() {
@@ -1526,7 +1611,14 @@ function _xhsClickLogin() {
   return false;
 }
 
-// ---- 自动登录主流程 ----
+/** 自动登录成功后自动启动自动任务（若未在运行则模拟点击「启动自动任务」） */
+function startAutoTaskAfterLogin() {
+  if (autoTaskRunning) return;
+  var btnStart = document.getElementById('btnAutoTaskStart');
+  if (btnStart && !btnStart.disabled) btnStart.click();
+}
+
+// ---- 自动登录主流程（使用单选选中的账号） ----
 function doAutoLogin() {
   if (autoTaskRunning) {
     autoTaskAbort = true;
@@ -1536,14 +1628,15 @@ function doAutoLogin() {
     updateAutoTaskButtons();
     setAutoTaskStatus('已关闭（自动登录触发）');
   }
-  var phone = smsPhone;
-  var codeUrl = smsCodeUrl;
-  if (!phone) {
-    setAccountStatus('请先填写手机号并保存', 'err');
+  var acc = getSelectedAccount();
+  var phone = acc ? acc.phone : '';
+  var codeUrl = acc ? acc.codeUrl : '';
+  if (!acc || !phone) {
+    setAccountStatus('请先添加账号并选中一个账号（单选）', 'err');
     return;
   }
   if (!codeUrl) {
-    setAccountStatus('请先填写接码链接并保存', 'err');
+    setAccountStatus('请先填写选中账号的接码链接', 'err');
     return;
   }
 
@@ -1588,7 +1681,6 @@ function doAutoLogin() {
                   setAccountStatus('未找到发送验证码按钮', 'err');
                   return;
                 }
-                if (btnFetchSmsCode) btnFetchSmsCode.click();
                 var maxPoll = 40;
                 var pollCount = 0;
                 function pollSmsCode() {
@@ -1634,9 +1726,13 @@ function doAutoLogin() {
                             }
                             var clicked = results && results[0] && results[0].result;
                             if (clicked) {
-                              setTimeout(function() { setAccountStatus('登录操作完成', 'ok'); }, 2500);
+                              setTimeout(function() {
+                                setAccountStatus('登录操作完成', 'ok');
+                                startAutoTaskAfterLogin();
+                              }, 2500);
                             } else {
                               setAccountStatus('未找到登录按钮，可能已自动登录', 'ok');
+                              setTimeout(startAutoTaskAfterLogin, 500);
                             }
                           });
                         }, 800);

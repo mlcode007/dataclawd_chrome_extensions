@@ -285,6 +285,47 @@ window.addEventListener('message', function(event) {
   }
 });
 
+// ---------- 检测登录弹窗，通知 background 触发自动登录 ----------
+(function() {
+  var loginDialogNotified = false;
+  var LOGIN_CHECK_INTERVAL = 2000;
+
+  function hasLoginDialog() {
+    var phoneInputSelectors = [
+      'input[placeholder*="手机号"]',
+      'input[type="tel"]',
+      'input[placeholder*="请输入手机号"]',
+      'input[name="phone"]',
+      'input[placeholder*="phone"]'
+    ];
+    for (var i = 0; i < phoneInputSelectors.length; i++) {
+      var el = document.querySelector(phoneInputSelectors[i]);
+      if (el && el.offsetParent !== null) return true;
+    }
+    return false;
+  }
+
+  function checkLoginDialog() {
+    if (hasLoginDialog()) {
+      if (!loginDialogNotified) {
+        loginDialogNotified = true;
+        console.log('[DataCrawler] 检测到登录弹窗，通知自动登录');
+        chrome.runtime.sendMessage({ type: 'loginDialogDetected' });
+      }
+    } else {
+      loginDialogNotified = false;
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() {
+      setInterval(checkLoginDialog, LOGIN_CHECK_INTERVAL);
+    });
+  } else {
+    setInterval(checkLoginDialog, LOGIN_CHECK_INTERVAL);
+  }
+})();
+
 // ---------- 自动任务时页面左上角「请求关键词」倒计时浮层 ----------
 var dataCrawlerCountdownIntervalId = null;
 chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {

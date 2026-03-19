@@ -57,6 +57,10 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
     sendResponse({ ok: true });
     return false;
   }
+  if (msg.type === 'loginDialogDetected') {
+    handleLoginDialogDetected(sender);
+    return false;
+  }
   if (msg.type !== 'xhsCallbackFetch' || !msg.url || msg.body === undefined) {
     return false;
   }
@@ -432,23 +436,100 @@ function getAccountTodayCollectCountBg(stats, accIndex) {
 
 function extractSmsCode(text) {
   if (!text) return '';
-  var s = String(text);
-  var m = s.match(/verification\s+code\s+is[:\s]*(\d{4,8})/i)
-       || s.match(/验证码[是为：:\s]*(\d{4,8})/)
-       || s.match(/code["\s]*[:\s]*["\s]*(\d{4,8})/i);
-  if (m) return m[1];
-  try {
-    var obj = JSON.parse(s);
-    var content = (obj.data && obj.data.fields && obj.data.fields.content)
-               || (obj.data && obj.data.content)
-               || obj.content || '';
-    if (content) {
-      var cm = content.match(/(\d{4,8})/);
-      if (cm) return cm[1];
+  var m = String(text).match(/code\s+is[:\s]*(\d{4,8})/i);
+  return m ? m[1] : '';
+}
+
+var _autoLoginInProgress = false;
+
+function handleLoginDialogDetected(sender) {
+  if (_autoLoginInProgress) return;
+  if (backgroundAutoTaskRunning) return;
+  var tabId = sender && sender.tab && sender.tab.id;
+  if (!tabId) return;
+
+  chrome.storage.local.get(['accountList', 'selectedAccountIndex', 'autoLoginOnDialog', 'autoTaskRunning'], function(o) {
+    if (o.autoLoginOnDialog === false) return;
+    if (o.autoTaskRunning) return;
+    var accs = (o.accountList || []).map(function(item) {
+      return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim(), maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 200 };
+    });
+    var accIdx = parseInt(o.selectedAccountIndex, 10) || 0;
+    if (accIdx < 0 || accIdx >= accs.length) return;
+    var acc = accs[accIdx];
+    if (!acc.phone || !acc.codeUrl) {
+      pushAutoTaskLogLine('检测到登录弹窗，但账号 ' + (accIdx + 1) + ' 缺少手机号或接码链接');
+      return;
     }
-  } catch (e) {}
-  var all = s.match(/\d{4,8}/g);
-  return all && all.length ? all[all.length - 1] : '';
+
+    _autoLoginInProgress = true;
+    pushAutoTaskLogLine('检测到登录弹窗，自动登录账号 ' + (accIdx + 1) + '：' + acc.phone);
+    setAutoTaskStatusInStorage('检测到登录弹窗，正在自动登录…');
+
+    chrome.scripting.executeScript({
+      target: { tabId: tabId }, world: 'MAIN', func: _xhsFillPhone, args: [acc.phone]
+    }, function(results) {
+      if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) {
+        pushAutoTaskLogLine('自动登录：未找到手机号输入框');
+        _autoLoginInProgress = false;
+        return;
+      }
+      setTimeout(function() {
+        chrome.scripting.executeScript({
+          target: { tabId: tabId }, world: 'MAIN', func: _xhsClickSendSms, args: []
+        }, function(results) {
+          if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) {
+            pushAutoTaskLogLine('自动登录：未找到发送验证码按钮');
+            _autoLoginInProgress = false;
+            return;
+          }
+          var maxPoll = 40;
+          var pollCount = 0;
+          function pollSmsCode() {
+            if (pollCount >= maxPoll) {
+              pushAutoTaskLogLine('自动登录：接码超时');
+              _autoLoginInProgress = false;
+              return;
+            }
+            pollCount++;
+            setAutoTaskStatusInStorage('自动登录：等待接码… (' + pollCount + '/' + maxPoll + ')');
+            fetch(acc.codeUrl)
+              .then(function(res) { return res.text(); })
+              .then(function(text) {
+                var code = extractSmsCode(text || '');
+                if (!code) {
+                  setTimeout(pollSmsCode, 3000);
+                  return;
+                }
+                pushAutoTaskLogLine('自动登录：收到验证码 ' + code);
+                chrome.scripting.executeScript({
+                  target: { tabId: tabId }, world: 'MAIN', func: _xhsFillSmsCode, args: [code]
+                }, function() {
+                  setTimeout(function() {
+                    chrome.scripting.executeScript({
+                      target: { tabId: tabId }, world: 'MAIN', func: _xhsClickLogin, args: []
+                    }, function() {
+                      setTimeout(function() {
+                        pushAutoTaskLogLine('自动登录：账号 ' + (accIdx + 1) + ' 登录完成');
+                        setAutoTaskStatusInStorage('自动登录完成');
+                        _autoLoginInProgress = false;
+                        pushAutoTaskLogLine('登录成功，自动启动采集任务');
+                        if (!backgroundAutoTaskRunning) {
+                          backgroundAutoTaskAbort = false;
+                          runBackgroundAutoTaskLoop();
+                        }
+                      }, 3000);
+                    });
+                  }, 800);
+                });
+              })
+              .catch(function() { setTimeout(pollSmsCode, 3000); });
+          }
+          setTimeout(pollSmsCode, 3000);
+        });
+      }, 600);
+    });
+  });
 }
 
 function isAccountExceededTodayBg(accountList, stats, accIndex) {

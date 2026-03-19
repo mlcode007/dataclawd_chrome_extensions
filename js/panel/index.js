@@ -207,26 +207,8 @@ function getSelectedAccount() {
 /** 从接码接口响应文本中提取4-8位验证码，兼容多种格式 */
 function extractSmsCode(text) {
   if (!text) return '';
-  var s = String(text);
-  // 优先：verification code is: 123456 / 验证码：123456 / 验证码是 123456
-  var m = s.match(/verification\s+code\s+is[:\s]*(\d{4,8})/i)
-       || s.match(/验证码[是为：:\s]*(\d{4,8})/)
-       || s.match(/code["\s]*[:\s]*["\s]*(\d{4,8})/i);
-  if (m) return m[1];
-  // 从 JSON content 字段中提取
-  try {
-    var obj = JSON.parse(s);
-    var content = (obj.data && obj.data.fields && obj.data.fields.content)
-               || (obj.data && obj.data.content)
-               || obj.content || '';
-    if (content) {
-      var cm = content.match(/(\d{4,8})/);
-      if (cm) return cm[1];
-    }
-  } catch (e) {}
-  // 兜底：文本中最后一个4-8位连续数字（跳过 "code":0 这种短数字）
-  var all = s.match(/\d{4,8}/g);
-  return all && all.length ? all[all.length - 1] : '';
+  var m = String(text).match(/code\s+is[:\s]*(\d{4,8})/i);
+  return m ? m[1] : '';
 }
 
 function renderAccountList() {
@@ -1873,11 +1855,11 @@ function _xhsClickLogin() {
   return false;
 }
 
-/** 自动登录成功后自动启动自动任务（若未在运行则模拟点击「启动自动任务」） */
+/** 自动登录成功后自动启动自动任务 */
 function startAutoTaskAfterLogin() {
   if (autoTaskRunning) return;
-  var btnStart = document.getElementById('btnAutoTaskStart');
-  if (btnStart && !btnStart.disabled) btnStart.click();
+  pushAutoTaskLogLine('登录成功，自动启动采集任务');
+  runAutoTaskLoop();
 }
 
 /**

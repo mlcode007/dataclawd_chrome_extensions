@@ -237,7 +237,7 @@ window.addEventListener('message', function(event) {
               stats[accKey][todayStr] = (stats[accKey][todayStr] || 0) + 1;
               var newCount = stats[accKey][todayStr];
               chrome.storage.local.set({ accountCollectStats: stats });
-              var maxC = accs[accIdx] && accs[accIdx].maxCollectCount != null ? accs[accIdx].maxCollectCount : 10;
+              var maxC = accs[accIdx] && accs[accIdx].maxCollectCount != null ? accs[accIdx].maxCollectCount : 200;
               var countMsg = '账号' + (accIdx + 1) + ' 今日累计采集：' + newCount + '/' + maxC;
               console.log('[DataCrawler] ' + countMsg);
               chrome.storage.local.set({ autoTaskLogLine: { time: Date.now(), text: '✓ ' + msg + ' | ' + countMsg } });

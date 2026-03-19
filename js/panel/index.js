@@ -123,12 +123,12 @@ function loadApiHost() {
         return {
           phone: (item.phone || '').trim(),
           codeUrl: (item.codeUrl || '').trim(),
-          maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 10
+          maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 200
         };
       });
       selectedAccountIndex = Math.min(Math.max(0, parseInt(o[SELECTED_ACCOUNT_INDEX_KEY], 10) || 0), accountList.length - 1);
     } else {
-      accountList = [{ phone: smsPhone, codeUrl: smsCodeUrl, maxCollectCount: 10 }];
+      accountList = [{ phone: smsPhone, codeUrl: smsCodeUrl, maxCollectCount: 200 }];
       selectedAccountIndex = 0;
       chrome.storage.local.set({ accountList: accountList, selectedAccountIndex: 0 });
     }
@@ -177,7 +177,7 @@ function incrementAccountCollectCount(accIndex) {
 function isAccountExceededToday(accIndex) {
   if (accIndex < 0 || accIndex >= accountList.length) return true;
   var acc = accountList[accIndex];
-  var maxCount = acc.maxCollectCount != null ? acc.maxCollectCount : 10;
+  var maxCount = acc.maxCollectCount != null ? acc.maxCollectCount : 200;
   return getAccountTodayCollectCount(accIndex) >= maxCount;
 }
 
@@ -232,7 +232,7 @@ function renderAccountList() {
     urlSpan.className = 'account-row-codeurl';
     urlSpan.textContent = (acc.codeUrl || '').trim() ? '接码：' + (acc.codeUrl || '').trim() : '（未填接码链接）';
     var todayCount = getAccountTodayCollectCount(i);
-    var maxCount = acc.maxCollectCount != null ? acc.maxCollectCount : 10;
+    var maxCount = acc.maxCollectCount != null ? acc.maxCollectCount : 200;
     var statsSpan = document.createElement('span');
     statsSpan.className = 'account-row-stats' + (todayCount >= maxCount ? ' exceeded' : '');
     statsSpan.textContent = '今日采集：' + todayCount + '/' + maxCount;
@@ -318,7 +318,7 @@ function addAccountFromForm() {
   var phone = (phoneInput && phoneInput.value || '').trim();
   var codeUrl = (urlInput && urlInput.value || '').trim();
   if (!phone && !codeUrl) return;
-  accountList.push({ phone: phone, codeUrl: codeUrl, maxCollectCount: 10 });
+  accountList.push({ phone: phone, codeUrl: codeUrl, maxCollectCount: 200 });
   selectedAccountIndex = accountList.length - 1;
   saveAccounts();
   if (phoneInput) phoneInput.value = '';
@@ -999,7 +999,7 @@ function runAutoTaskLoop() {
       accountCollectStats = o[ACCOUNT_COLLECT_STATS_KEY] || accountCollectStats;
       if (o[ACCOUNT_LIST_STORAGE_KEY]) {
         accountList = o[ACCOUNT_LIST_STORAGE_KEY].map(function(item) {
-          return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim(), maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 10 };
+          return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim(), maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 200 };
         });
       }
       if (o[SELECTED_ACCOUNT_INDEX_KEY] != null) selectedAccountIndex = parseInt(o[SELECTED_ACCOUNT_INDEX_KEY], 10) || 0;
@@ -1010,7 +1010,7 @@ function runAutoTaskLoop() {
       }
 
       var todayCount = getAccountTodayCollectCount(selectedAccountIndex);
-      var maxCount = accountList[selectedAccountIndex] ? accountList[selectedAccountIndex].maxCollectCount : 10;
+      var maxCount = accountList[selectedAccountIndex] ? accountList[selectedAccountIndex].maxCollectCount : 200;
       pushAutoTaskLogLine('账号 ' + (selectedAccountIndex + 1) + ' 今日已采集 ' + todayCount + '/' + maxCount + '，已达上限');
 
       if (areAllAccountsExceededToday()) {

@@ -433,7 +433,7 @@ function getAccountTodayCollectCountBg(stats, accIndex) {
 function isAccountExceededTodayBg(accountList, stats, accIndex) {
   if (accIndex < 0 || accIndex >= accountList.length) return true;
   var acc = accountList[accIndex];
-  var maxCount = acc.maxCollectCount != null ? acc.maxCollectCount : 10;
+  var maxCount = acc.maxCollectCount != null ? acc.maxCollectCount : 200;
   return getAccountTodayCollectCountBg(stats, accIndex) >= maxCount;
 }
 
@@ -807,7 +807,7 @@ function runBackgroundAutoTaskLoop() {
   function checkAndSwitchIfNeeded(thenContinue) {
     chrome.storage.local.get(['accountList', 'selectedAccountIndex', 'accountCollectStats'], function(o) {
       var accs = (o.accountList || []).map(function(item) {
-        return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim(), maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 10 };
+        return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim(), maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 200 };
       });
       var accIdx = parseInt(o.selectedAccountIndex, 10) || 0;
       var stats = o.accountCollectStats || {};
@@ -818,7 +818,7 @@ function runBackgroundAutoTaskLoop() {
       }
 
       var todayCount = getAccountTodayCollectCountBg(stats, accIdx);
-      var maxCount = accs[accIdx] ? accs[accIdx].maxCollectCount : 10;
+      var maxCount = accs[accIdx] ? accs[accIdx].maxCollectCount : 200;
       pushAutoTaskLogLine('账号 ' + (accIdx + 1) + ' 今日已采集 ' + todayCount + '/' + maxCount + '，已达上限');
 
       if (areAllAccountsExceededTodayBg(accs, stats)) {

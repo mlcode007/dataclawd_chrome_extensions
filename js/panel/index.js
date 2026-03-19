@@ -204,6 +204,31 @@ function getSelectedAccount() {
   return accountList[idx];
 }
 
+/** 从接码接口响应文本中提取4-8位验证码，兼容多种格式 */
+function extractSmsCode(text) {
+  if (!text) return '';
+  var s = String(text);
+  // 优先：verification code is: 123456 / 验证码：123456 / 验证码是 123456
+  var m = s.match(/verification\s+code\s+is[:\s]*(\d{4,8})/i)
+       || s.match(/验证码[是为：:\s]*(\d{4,8})/)
+       || s.match(/code["\s]*[:\s]*["\s]*(\d{4,8})/i);
+  if (m) return m[1];
+  // 从 JSON content 字段中提取
+  try {
+    var obj = JSON.parse(s);
+    var content = (obj.data && obj.data.fields && obj.data.fields.content)
+               || (obj.data && obj.data.content)
+               || obj.content || '';
+    if (content) {
+      var cm = content.match(/(\d{4,8})/);
+      if (cm) return cm[1];
+    }
+  } catch (e) {}
+  // 兜底：文本中最后一个4-8位连续数字（跳过 "code":0 这种短数字）
+  var all = s.match(/\d{4,8}/g);
+  return all && all.length ? all[all.length - 1] : '';
+}
+
 function renderAccountList() {
   var container = document.getElementById('accountListContainer');
   if (!container) return;
@@ -289,8 +314,8 @@ function renderAccountList() {
           btn.disabled = false;
           btn.textContent = '测试';
           var raw = (text || '').trim().slice(0, 300) || '（响应为空）';
-          var codeMatch = raw.match(/\bcode\b[^0-9]*(\d+)/i);
-          var display = raw + '\n' + (codeMatch ? ('验证码：' + codeMatch[1]) : '未抽取到验证码');
+          var codeMatch = extractSmsCode(raw);
+          var display = raw + '\n' + (codeMatch ? ('验证码：' + codeMatch) : '未抽取到验证码');
           showSmsCodeResult(display, false);
         })
         .catch(function(err) {
@@ -1072,10 +1097,22 @@ function runAutoTaskLoop() {
         return;
       }
 
-      doAutoSwitchAccount(nextIdx, function() {
-        // 登录完成后 startAutoTaskAfterLogin 会重新启动任务循环
+      sendCountdownToPage(false);
+      autoTaskRunning = false;
+      if (autoTaskCountdownTimer) { clearInterval(autoTaskCountdownTimer); autoTaskCountdownTimer = null; }
+      chrome.storage.local.remove('currentKeywordTask');
+      updateAutoTaskButtons();
+      pushAutoTaskLogLine('暂停自动任务，准备切换到账号 ' + (nextIdx + 1));
+      setAutoTaskStatus('正在切换到账号 ' + (nextIdx + 1) + '…');
+      doAutoSwitchAccount(nextIdx, function(success) {
+        if (success) {
+          pushAutoTaskLogLine('账号 ' + (nextIdx + 1) + ' 登录成功，自动重新启动采集任务');
+          runAutoTaskLoop();
+        } else {
+          pushAutoTaskLogLine('账号 ' + (nextIdx + 1) + ' 切换/登录失败，15秒后重试');
+          setTimeout(function() { runAutoTaskLoop(); }, 15000);
+        }
       });
-      done();
     });
   }
 
@@ -1855,29 +1892,128 @@ function doAutoSwitchAccount(nextIndex, callback) {
   saveAccounts();
   renderAccountList();
 
-  doAutoLogout();
+  var acc = accountList[nextIndex];
+  var phone = acc ? (acc.phone || '').trim() : '';
+  var codeUrl = acc ? (acc.codeUrl || '').trim() : '';
 
-  setTimeout(function() {
-    setAutoTaskStatus('等待10秒后登录账号 ' + (nextIndex + 1) + '…');
-    pushAutoTaskLogLine('等待10秒后登录账号 ' + (nextIndex + 1));
+  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+    var tab = tabs[0];
+    if (!tab || !tab.id) {
+      pushAutoTaskLogLine('无法获取标签页，切换失败');
+      if (callback) callback(false);
+      return;
+    }
+    var tabId = tab.id;
 
-    var remain = 10;
-    var switchCountdown = setInterval(function() {
-      remain--;
-      if (remain > 0) {
-        setAutoTaskStatus('切换账号中… ' + remain + ' 秒后自动登录');
-      } else {
-        clearInterval(switchCountdown);
-      }
-    }, 1000);
+    chrome.scripting.executeScript({
+      target: { tabId: tabId }, world: 'MAIN', func: _xhsClickMore, args: []
+    }, function() {
+      setTimeout(function() {
+        chrome.scripting.executeScript({
+          target: { tabId: tabId }, world: 'MAIN', func: _xhsClickLogout, args: []
+        }, function() {
+          setTimeout(function() {
+            clearXhsCookies(function(n) {
+              pushAutoTaskLogLine('已退出，清除 ' + n + ' 个 Cookie');
+            });
 
-    setTimeout(function() {
-      clearInterval(switchCountdown);
-      pushAutoTaskLogLine('开始自动登录账号 ' + (nextIndex + 1) + '：' + (accountList[nextIndex] ? accountList[nextIndex].phone : ''));
-      doAutoLogin();
-      if (callback) callback();
-    }, 10000);
-  }, 5000);
+            setAutoTaskStatus('等待10秒后登录账号 ' + (nextIndex + 1) + '…');
+            pushAutoTaskLogLine('等待10秒后登录账号 ' + (nextIndex + 1));
+
+            var remain = 10;
+            var switchCountdown = setInterval(function() {
+              remain--;
+              if (remain > 0) {
+                setAutoTaskStatus('切换账号中… ' + remain + ' 秒后自动登录');
+              } else {
+                clearInterval(switchCountdown);
+              }
+            }, 1000);
+
+            setTimeout(function() {
+              clearInterval(switchCountdown);
+              if (!phone || !codeUrl) {
+                pushAutoTaskLogLine('账号 ' + (nextIndex + 1) + ' 缺少手机号或接码链接，跳过');
+                if (callback) callback(false);
+                return;
+              }
+
+              pushAutoTaskLogLine('开始自动登录账号 ' + (nextIndex + 1) + '：' + phone);
+              setAutoTaskStatus('正在登录账号 ' + (nextIndex + 1) + '…');
+
+              chrome.tabs.update(tabId, { url: 'https://www.rednote.com' }, function() {
+                waitForTabComplete(tabId).then(function() {
+                  setTimeout(function() {
+                    chrome.scripting.executeScript({
+                      target: { tabId: tabId }, world: 'MAIN', func: _xhsFillPhone, args: [phone]
+                    }, function(results) {
+                      if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) {
+                        pushAutoTaskLogLine('未找到手机号输入框');
+                        if (callback) callback(false);
+                        return;
+                      }
+                      setTimeout(function() {
+                        chrome.scripting.executeScript({
+                          target: { tabId: tabId }, world: 'MAIN', func: _xhsClickSendSms, args: []
+                        }, function(results) {
+                          if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) {
+                            pushAutoTaskLogLine('未找到发送验证码按钮');
+                            if (callback) callback(false);
+                            return;
+                          }
+                          var maxPoll = 40;
+                          var pollCount = 0;
+                          function pollSmsCode() {
+                            if (autoTaskAbort) { if (callback) callback(false); return; }
+                            if (pollCount >= maxPoll) {
+                              pushAutoTaskLogLine('接码超时');
+                              if (callback) callback(false);
+                              return;
+                            }
+                            pollCount++;
+                            setAutoTaskStatus('等待接码中… (' + pollCount + '/' + maxPoll + ')');
+                            fetch(codeUrl)
+                              .then(function(res) { return res.text(); })
+                              .then(function(text) {
+                                var code = extractSmsCode(text || '');
+                                if (!code) {
+                                  setTimeout(pollSmsCode, 3000);
+                                  return;
+                                }
+                                pushAutoTaskLogLine('收到验证码：' + code);
+                                setAutoTaskStatus('填入验证码…');
+                                chrome.scripting.executeScript({
+                                  target: { tabId: tabId }, world: 'MAIN', func: _xhsFillSmsCode, args: [code]
+                                }, function() {
+                                  setTimeout(function() {
+                                    setAutoTaskStatus('点击登录…');
+                                    chrome.scripting.executeScript({
+                                      target: { tabId: tabId }, world: 'MAIN', func: _xhsClickLogin, args: []
+                                    }, function() {
+                                      setTimeout(function() {
+                                        pushAutoTaskLogLine('账号 ' + (nextIndex + 1) + ' 登录完成');
+                                        setAutoTaskStatus('账号 ' + (nextIndex + 1) + ' 登录完成');
+                                        if (callback) callback(true);
+                                      }, 3000);
+                                    });
+                                  }, 800);
+                                });
+                              })
+                              .catch(function() { setTimeout(pollSmsCode, 3000); });
+                          }
+                          setTimeout(pollSmsCode, 3000);
+                        });
+                      }, 600);
+                    });
+                  }, 5000);
+                });
+              });
+            }, 10000);
+          }, 2000);
+        });
+      }, 800);
+    });
+  });
 }
 
 // ---- 自动登录主流程（使用单选选中的账号） ----
@@ -1955,10 +2091,9 @@ function doAutoLogin() {
                   fetch(codeUrl)
                     .then(function(res) { return res.text(); })
                     .then(function(text) {
-                      var match = (text || '').match(/\bcode\b[^0-9]*(\d+)/i);
-                      var code = match ? match[1] : '';
+                      var code = extractSmsCode(text || '');
                       var raw = (text || '').trim().slice(0, 300) || '（响应为空）';
-                      showSmsCodeResult(raw + '\n' + (match ? ('验证码：' + code) : '未抽取到验证码'), false);
+                      showSmsCodeResult(raw + '\n' + (code ? ('验证码：' + code) : '未抽取到验证码'), false);
                       if (!code) {
                         setTimeout(pollSmsCode, 3000);
                         return;

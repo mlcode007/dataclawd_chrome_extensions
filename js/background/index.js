@@ -430,6 +430,27 @@ function getAccountTodayCollectCountBg(stats, accIndex) {
   return stats[key][today] || 0;
 }
 
+function extractSmsCode(text) {
+  if (!text) return '';
+  var s = String(text);
+  var m = s.match(/verification\s+code\s+is[:\s]*(\d{4,8})/i)
+       || s.match(/验证码[是为：:\s]*(\d{4,8})/)
+       || s.match(/code["\s]*[:\s]*["\s]*(\d{4,8})/i);
+  if (m) return m[1];
+  try {
+    var obj = JSON.parse(s);
+    var content = (obj.data && obj.data.fields && obj.data.fields.content)
+               || (obj.data && obj.data.content)
+               || obj.content || '';
+    if (content) {
+      var cm = content.match(/(\d{4,8})/);
+      if (cm) return cm[1];
+    }
+  } catch (e) {}
+  var all = s.match(/\d{4,8}/g);
+  return all && all.length ? all[all.length - 1] : '';
+}
+
 function isAccountExceededTodayBg(accountList, stats, accIndex) {
   if (accIndex < 0 || accIndex >= accountList.length) return true;
   var acc = accountList[accIndex];
@@ -712,8 +733,7 @@ function doBackgroundAutoSwitchAccount(tabId, nextIndex, accountList, callback) 
                           fetch(codeUrl)
                             .then(function(res) { return res.text(); })
                             .then(function(text) {
-                              var match = (text || '').match(/\bcode\b[^0-9]*(\d+)/i);
-                              var code = match ? match[1] : '';
+                              var code = extractSmsCode(text || '');
                               if (!code) {
                                 setTimeout(pollSmsCode, 3000);
                                 return;

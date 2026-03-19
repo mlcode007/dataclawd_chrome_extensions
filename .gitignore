@@ -1,5 +1,6 @@
 # 打包产物与私钥
 dist/
+script/
 key.pem
 *.crx
 *.zip
@@ -10,5 +11,3 @@ node_modules/
 # 系统与 IDE
 .DS_Store
 .idea/
-
-script/*.py

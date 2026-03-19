@@ -923,11 +923,20 @@ function runBackgroundAutoTaskLoop() {
               }, function(results) {
                 if (backgroundAutoTaskAbort) { done(); return; }
                 var ok = results && results[0] && results[0].result === true;
-                if (!ok && index === 0) {
-                  setAutoTaskStatusInStorage('未找到搜索框，请先打开小红书搜索页');
-                  pushAutoTaskLogLine('未找到搜索框，请先打开小红书搜索页');
-                  sendCountdownToPage(false);
-                  done();
+                if (!ok) {
+                  chrome.storage.local.get(['selectedAccountIndex', 'accountCollectStats', 'accountList'], function(so) {
+                    var accIdx = parseInt(so.selectedAccountIndex, 10) || 0;
+                    var stats = so.accountCollectStats || {};
+                    var accs = so.accountList || [];
+                    var maxC = accs[accIdx] && accs[accIdx].maxCollectCount != null ? accs[accIdx].maxCollectCount : 200;
+                    var accKey = String(accIdx);
+                    var today = getTodayDateStr();
+                    if (!stats[accKey]) stats[accKey] = {};
+                    stats[accKey][today] = maxC;
+                    chrome.storage.local.set({ accountCollectStats: stats });
+                    pushAutoTaskLogLine('账号 ' + (accIdx + 1) + ' 未找到搜索框（可能被安全限制），标记今日暂停采集');
+                    loop();
+                  });
                   return;
                 }
                 chrome.storage.local.get(['publishTimeFilter'], function(o) {

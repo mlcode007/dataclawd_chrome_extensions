@@ -1110,11 +1110,17 @@ function runAutoTaskLoop() {
           }, function(results) {
             if (autoTaskAbort) { done(); return; }
             var ok = results && results[0] && results[0].result === true;
-            if (!ok && index === 0) {
-              setAutoTaskStatus('未找到搜索框，请先打开小红书搜索页');
-              pushAutoTaskLogLine('未找到搜索框，请先打开小红书搜索页');
-              sendCountdownToPage(false);
-              done();
+            if (!ok) {
+              var acc = accountList[selectedAccountIndex];
+              var maxC = acc ? acc.maxCollectCount : 200;
+              pushAutoTaskLogLine('账号 ' + (selectedAccountIndex + 1) + ' 未找到搜索框（可能被安全限制），标记今日暂停采集');
+              var key = String(selectedAccountIndex);
+              var today = getTodayDateStr();
+              if (!accountCollectStats[key]) accountCollectStats[key] = {};
+              accountCollectStats[key][today] = maxC;
+              saveCollectStats();
+              renderAccountList();
+              loop();
               return;
             }
             refreshSearchResultTable();

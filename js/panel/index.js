@@ -88,13 +88,16 @@ var SMS_PHONE_STORAGE_KEY = 'smsPhone';
 var SMS_CODE_URL_STORAGE_KEY = 'smsCodeUrl';
 var ACCOUNT_LIST_STORAGE_KEY = 'accountList';
 var SELECTED_ACCOUNT_INDEX_KEY = 'selectedAccountIndex';
+var ACCOUNT_COLLECT_STATS_KEY = 'accountCollectStats';
 var apiHost = '';
 var smsPhone = '';
 var smsCodeUrl = '';
-/** 登录账号列表，每项 { phone, codeUrl }；自动登录时使用选中的账号 */
+/** 登录账号列表，每项 { phone, codeUrl, maxCollectCount }；自动登录时使用选中的账号 */
 var accountList = [];
 /** 当前选中用于自动登录的账号索引 */
 var selectedAccountIndex = 0;
+/** 采集次数统计 { "索引": { "YYYY-MM-DD": count } } */
+var accountCollectStats = {};
 
 function getApiHostDefault() {
   var m = chrome.runtime.getManifest();
@@ -107,7 +110,7 @@ function getApiHost() {
 }
 
 function loadApiHost() {
-  chrome.storage.local.get([API_HOST_STORAGE_KEY, SMS_PHONE_STORAGE_KEY, SMS_CODE_URL_STORAGE_KEY, ACCOUNT_LIST_STORAGE_KEY, SELECTED_ACCOUNT_INDEX_KEY], function(o) {
+  chrome.storage.local.get([API_HOST_STORAGE_KEY, SMS_PHONE_STORAGE_KEY, SMS_CODE_URL_STORAGE_KEY, ACCOUNT_LIST_STORAGE_KEY, SELECTED_ACCOUNT_INDEX_KEY, ACCOUNT_COLLECT_STATS_KEY], function(o) {
     var v = (o[API_HOST_STORAGE_KEY] || '').trim();
     apiHost = v || getApiHostDefault();
     var input = document.getElementById('apiHostInput');
@@ -116,13 +119,20 @@ function loadApiHost() {
     smsCodeUrl = (o[SMS_CODE_URL_STORAGE_KEY] || '').trim();
     var list = o[ACCOUNT_LIST_STORAGE_KEY];
     if (Array.isArray(list) && list.length > 0) {
-      accountList = list.map(function(item) { return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim() }; });
+      accountList = list.map(function(item) {
+        return {
+          phone: (item.phone || '').trim(),
+          codeUrl: (item.codeUrl || '').trim(),
+          maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 10
+        };
+      });
       selectedAccountIndex = Math.min(Math.max(0, parseInt(o[SELECTED_ACCOUNT_INDEX_KEY], 10) || 0), accountList.length - 1);
     } else {
-      accountList = [{ phone: smsPhone, codeUrl: smsCodeUrl }];
+      accountList = [{ phone: smsPhone, codeUrl: smsCodeUrl, maxCollectCount: 10 }];
       selectedAccountIndex = 0;
       chrome.storage.local.set({ accountList: accountList, selectedAccountIndex: 0 });
     }
+    accountCollectStats = o[ACCOUNT_COLLECT_STATS_KEY] || {};
     if (typeof renderAccountList === 'function') renderAccountList();
   });
 }
@@ -137,6 +147,54 @@ function saveApiHost() {
 
 function saveAccounts() {
   chrome.storage.local.set({ accountList: accountList, selectedAccountIndex: selectedAccountIndex });
+}
+
+function saveCollectStats() {
+  chrome.storage.local.set({ accountCollectStats: accountCollectStats });
+}
+
+function getTodayDateStr() {
+  var d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function getAccountTodayCollectCount(accIndex) {
+  var key = String(accIndex);
+  var today = getTodayDateStr();
+  if (!accountCollectStats[key]) return 0;
+  return accountCollectStats[key][today] || 0;
+}
+
+function incrementAccountCollectCount(accIndex) {
+  var key = String(accIndex);
+  var today = getTodayDateStr();
+  if (!accountCollectStats[key]) accountCollectStats[key] = {};
+  accountCollectStats[key][today] = (accountCollectStats[key][today] || 0) + 1;
+  saveCollectStats();
+  return accountCollectStats[key][today];
+}
+
+function isAccountExceededToday(accIndex) {
+  if (accIndex < 0 || accIndex >= accountList.length) return true;
+  var acc = accountList[accIndex];
+  var maxCount = acc.maxCollectCount != null ? acc.maxCollectCount : 10;
+  return getAccountTodayCollectCount(accIndex) >= maxCount;
+}
+
+function areAllAccountsExceededToday() {
+  for (var i = 0; i < accountList.length; i++) {
+    if (!isAccountExceededToday(i)) return false;
+  }
+  return true;
+}
+
+function findNextAvailableAccount(currentIndex) {
+  if (!accountList.length) return -1;
+  for (var i = 1; i <= accountList.length; i++) {
+    var nextIdx = (currentIndex + i) % accountList.length;
+    if (!isAccountExceededToday(nextIdx)) return nextIdx;
+  }
+  return -1;
 }
 
 /** 返回当前选中用于自动登录的账号，无则 null */
@@ -173,8 +231,30 @@ function renderAccountList() {
     var urlSpan = document.createElement('span');
     urlSpan.className = 'account-row-codeurl';
     urlSpan.textContent = (acc.codeUrl || '').trim() ? '接码：' + (acc.codeUrl || '').trim() : '（未填接码链接）';
+    var todayCount = getAccountTodayCollectCount(i);
+    var maxCount = acc.maxCollectCount != null ? acc.maxCollectCount : 10;
+    var statsSpan = document.createElement('span');
+    statsSpan.className = 'account-row-stats' + (todayCount >= maxCount ? ' exceeded' : '');
+    statsSpan.textContent = '今日采集：' + todayCount + '/' + maxCount;
     textWrap.appendChild(phoneSpan);
     textWrap.appendChild(urlSpan);
+    textWrap.appendChild(statsSpan);
+    var maxInput = document.createElement('input');
+    maxInput.type = 'number';
+    maxInput.className = 'account-max-collect';
+    maxInput.min = '1';
+    maxInput.max = '9999';
+    maxInput.value = String(maxCount);
+    maxInput.title = '最大采集次数/天';
+    maxInput.dataset.index = String(i);
+    maxInput.addEventListener('change', function() {
+      var idx = parseInt(this.dataset.index, 10);
+      var val = Math.max(1, parseInt(this.value, 10) || 10);
+      this.value = String(val);
+      accountList[idx].maxCollectCount = val;
+      saveAccounts();
+      renderAccountList();
+    });
     var testBtn = document.createElement('button');
     testBtn.type = 'button';
     testBtn.className = 'btn-secondary btn-account-test';
@@ -187,6 +267,7 @@ function renderAccountList() {
     delBtn.dataset.index = String(i);
     row.appendChild(radio);
     row.appendChild(textWrap);
+    row.appendChild(maxInput);
     row.appendChild(testBtn);
     row.appendChild(delBtn);
     container.appendChild(row);
@@ -237,7 +318,7 @@ function addAccountFromForm() {
   var phone = (phoneInput && phoneInput.value || '').trim();
   var codeUrl = (urlInput && urlInput.value || '').trim();
   if (!phone && !codeUrl) return;
-  accountList.push({ phone: phone, codeUrl: codeUrl });
+  accountList.push({ phone: phone, codeUrl: codeUrl, maxCollectCount: 10 });
   selectedAccountIndex = accountList.length - 1;
   saveAccounts();
   if (phoneInput) phoneInput.value = '';
@@ -848,6 +929,31 @@ function runSingleKeywordSearch(tab, keyword, needNavigate) {
   });
 }
 
+function ensureContentScriptReady(tabId) {
+  return new Promise(function(resolve) {
+    try {
+      chrome.tabs.sendMessage(tabId, { type: 'dataCrawlerPing' }, function(response) {
+        if (chrome.runtime.lastError || !response || !response.pong) {
+          pushAutoTaskLogLine('content script 未就绪，刷新页面…');
+          chrome.tabs.reload(tabId, {}, function() {
+            waitForTabComplete(tabId).then(function() {
+              setTimeout(resolve, 2000);
+            });
+          });
+        } else {
+          resolve();
+        }
+      });
+    } catch (e) {
+      chrome.tabs.reload(tabId, {}, function() {
+        waitForTabComplete(tabId).then(function() {
+          setTimeout(resolve, 2000);
+        });
+      });
+    }
+  });
+}
+
 function updateAutoTaskButtons() {
   if (btnAutoTaskStart) btnAutoTaskStart.disabled = autoTaskRunning;
   if (btnAutoTaskStop) btnAutoTaskStop.disabled = !autoTaskRunning;
@@ -888,8 +994,70 @@ function runAutoTaskLoop() {
     var norm = h.replace(/\/+$/, '');
     return norm !== '' && norm !== apiHostPlaceholder.replace(/\/+$/, '');
   }
+  function checkAndSwitchAccountIfNeeded(thenContinue) {
+    chrome.storage.local.get([ACCOUNT_COLLECT_STATS_KEY, ACCOUNT_LIST_STORAGE_KEY, SELECTED_ACCOUNT_INDEX_KEY], function(o) {
+      accountCollectStats = o[ACCOUNT_COLLECT_STATS_KEY] || accountCollectStats;
+      if (o[ACCOUNT_LIST_STORAGE_KEY]) {
+        accountList = o[ACCOUNT_LIST_STORAGE_KEY].map(function(item) {
+          return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim(), maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 10 };
+        });
+      }
+      if (o[SELECTED_ACCOUNT_INDEX_KEY] != null) selectedAccountIndex = parseInt(o[SELECTED_ACCOUNT_INDEX_KEY], 10) || 0;
+
+      if (!isAccountExceededToday(selectedAccountIndex)) {
+        thenContinue();
+        return;
+      }
+
+      var todayCount = getAccountTodayCollectCount(selectedAccountIndex);
+      var maxCount = accountList[selectedAccountIndex] ? accountList[selectedAccountIndex].maxCollectCount : 10;
+      pushAutoTaskLogLine('账号 ' + (selectedAccountIndex + 1) + ' 今日已采集 ' + todayCount + '/' + maxCount + '，已达上限');
+
+      if (areAllAccountsExceededToday()) {
+        var now = new Date();
+        var nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+        var minToMidnight = Math.ceil((nextMidnight - now) / 60000);
+        var waitSec = 15;
+        var statusMsg = '所有账号今日采集均已达上限，' + waitSec + '秒后重新检测（距明日重置约' + minToMidnight + '分钟）';
+        setAutoTaskStatus(statusMsg);
+        pushAutoTaskLogLine(statusMsg);
+        sendCountdownToPage(true, '等待重新检测', waitSec);
+        setTimeout(function() { checkAndSwitchAccountIfNeeded(thenContinue); }, waitSec * 1000);
+        return;
+      }
+
+      var nextIdx = findNextAvailableAccount(selectedAccountIndex);
+      if (nextIdx < 0) {
+        var now2 = new Date();
+        var nextMidnight2 = new Date(now2.getFullYear(), now2.getMonth(), now2.getDate() + 1, 0, 0, 0);
+        var minToMidnight2 = Math.ceil((nextMidnight2 - now2) / 60000);
+        var waitSec2 = 15;
+        var statusMsg2 = '无可用账号，' + waitSec2 + '秒后重新检测（距明日重置约' + minToMidnight2 + '分钟）';
+        setAutoTaskStatus(statusMsg2);
+        pushAutoTaskLogLine(statusMsg2);
+        sendCountdownToPage(true, '等待重新检测', waitSec2);
+        setTimeout(function() { checkAndSwitchAccountIfNeeded(thenContinue); }, waitSec2 * 1000);
+        return;
+      }
+
+      doAutoSwitchAccount(nextIdx, function() {
+        // 登录完成后 startAutoTaskAfterLogin 会重新启动任务循环
+      });
+      done();
+    });
+  }
+
   function loop() {
     if (autoTaskAbort) { done(); return; }
+
+    checkAndSwitchAccountIfNeeded(function() {
+      loopInner();
+    });
+  }
+
+  function loopInner() {
+    if (autoTaskAbort) { done(); return; }
+    chrome.storage.local.remove(['searchNotesPages', 'searchNotesResult']);
     var host = getApiHost();
     if (!isApiHostConfigured(host)) {
       setAutoTaskStatus('请先配置并保存「接口根地址」');
@@ -989,11 +1157,14 @@ function runAutoTaskLoop() {
             chrome.tabs.update(tab.id, { url: getSearchBaseUrl(tabUrl) }, function() {
               waitForTabComplete(tab.id).then(function() {
                 if (autoTaskAbort) { done(); return; }
-                setTimeout(injectAndNext, 800);
+                setTimeout(injectAndNext, 2000);
               });
             });
           } else {
-            injectAndNext();
+            ensureContentScriptReady(tab.id).then(function() {
+              if (autoTaskAbort) { done(); return; }
+              injectAndNext();
+            });
           }
         }
         doNext();
@@ -1483,7 +1654,7 @@ function doAutoLogout() {
     var isXhsTab = tabUrl.indexOf('xiaohongshu.com') !== -1 || tabUrl.indexOf('rednote.com') !== -1;
     var targetUrl = isXhsTab
       ? (tabUrl.indexOf('rednote.com') !== -1 ? 'https://www.rednote.com' : 'https://www.xiaohongshu.com')
-      : 'https://www.xiaohongshu.com';
+      : 'https://www.rednote.com';
 
     function tryLogout() {
       // Step 1: 点击"≡ 更多"展开菜单
@@ -1634,6 +1805,43 @@ function startAutoTaskAfterLogin() {
   if (btnStart && !btnStart.disabled) btnStart.click();
 }
 
+/**
+ * 自动切换到下一个可用账号并登录。
+ * 流程：退出当前账号 → 等待10秒 → 切换单选 → 自动登录下一个账号
+ */
+function doAutoSwitchAccount(nextIndex, callback) {
+  pushAutoTaskLogLine('账号 ' + (selectedAccountIndex + 1) + ' 今日采集已达上限，切换到账号 ' + (nextIndex + 1));
+  setAutoTaskStatus('正在退出当前账号…');
+
+  selectedAccountIndex = nextIndex;
+  saveAccounts();
+  renderAccountList();
+
+  doAutoLogout();
+
+  setTimeout(function() {
+    setAutoTaskStatus('等待10秒后登录账号 ' + (nextIndex + 1) + '…');
+    pushAutoTaskLogLine('等待10秒后登录账号 ' + (nextIndex + 1));
+
+    var remain = 10;
+    var switchCountdown = setInterval(function() {
+      remain--;
+      if (remain > 0) {
+        setAutoTaskStatus('切换账号中… ' + remain + ' 秒后自动登录');
+      } else {
+        clearInterval(switchCountdown);
+      }
+    }, 1000);
+
+    setTimeout(function() {
+      clearInterval(switchCountdown);
+      pushAutoTaskLogLine('开始自动登录账号 ' + (nextIndex + 1) + '：' + (accountList[nextIndex] ? accountList[nextIndex].phone : ''));
+      doAutoLogin();
+      if (callback) callback();
+    }, 10000);
+  }, 5000);
+}
+
 // ---- 自动登录主流程（使用单选选中的账号） ----
 function doAutoLogin() {
   if (autoTaskRunning) {
@@ -1668,7 +1876,7 @@ function doAutoLogin() {
     var isXhsTab = tabUrl.indexOf('xiaohongshu.com') !== -1 || tabUrl.indexOf('rednote.com') !== -1;
     var loginTargetUrl = isXhsTab
       ? (tabUrl.indexOf('rednote.com') !== -1 ? 'https://www.rednote.com' : 'https://www.xiaohongshu.com')
-      : 'https://www.xiaohongshu.com';
+      : 'https://www.rednote.com';
 
     chrome.tabs.update(tabId, { url: loginTargetUrl }, function() {
       setAccountStatus('等待页面加载…', 'ing');
@@ -1812,6 +2020,14 @@ chrome.storage.onChanged.addListener(function(changes, areaName) {
       }
       autoTaskCallbackLogEl.scrollTop = autoTaskCallbackLogEl.scrollHeight;
     }
+  }
+  if (changes.accountCollectStats && changes.accountCollectStats.newValue) {
+    accountCollectStats = changes.accountCollectStats.newValue;
+    renderAccountList();
+  }
+  if (changes.selectedAccountIndex && changes.selectedAccountIndex.newValue != null) {
+    selectedAccountIndex = parseInt(changes.selectedAccountIndex.newValue, 10) || 0;
+    renderAccountList();
   }
   if (changes.autoTaskCallbackStatus && changes.autoTaskCallbackStatus.newValue) {
     var v = changes.autoTaskCallbackStatus.newValue;

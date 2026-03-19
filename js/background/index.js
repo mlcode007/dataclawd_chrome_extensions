@@ -418,6 +418,370 @@ function scrollAndWaitForPage2(tabId, callback) {
   }, 2000);
 }
 
+function getTodayDateStr() {
+  var d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function getAccountTodayCollectCountBg(stats, accIndex) {
+  var key = String(accIndex);
+  var today = getTodayDateStr();
+  if (!stats[key]) return 0;
+  return stats[key][today] || 0;
+}
+
+function isAccountExceededTodayBg(accountList, stats, accIndex) {
+  if (accIndex < 0 || accIndex >= accountList.length) return true;
+  var acc = accountList[accIndex];
+  var maxCount = acc.maxCollectCount != null ? acc.maxCollectCount : 10;
+  return getAccountTodayCollectCountBg(stats, accIndex) >= maxCount;
+}
+
+function areAllAccountsExceededTodayBg(accountList, stats) {
+  for (var i = 0; i < accountList.length; i++) {
+    if (!isAccountExceededTodayBg(accountList, stats, i)) return false;
+  }
+  return true;
+}
+
+function findNextAvailableAccountBg(accountList, stats, currentIndex) {
+  if (!accountList.length) return -1;
+  for (var i = 1; i <= accountList.length; i++) {
+    var nextIdx = (currentIndex + i) % accountList.length;
+    if (!isAccountExceededTodayBg(accountList, stats, nextIdx)) return nextIdx;
+  }
+  return -1;
+}
+
+// 注入到页面的自动登录函数（与 panel 中一致）
+function _xhsFillPhone(phone) {
+  var selectors = [
+    'input[placeholder*="手机号"]',
+    'input[type="tel"]',
+    'input[placeholder*="请输入手机号"]',
+    'input[name="phone"]',
+    'input[placeholder*="phone"]'
+  ];
+  for (var i = 0; i < selectors.length; i++) {
+    var el = document.querySelector(selectors[i]);
+    if (!el) continue;
+    if (el.offsetParent == null && el.getBoundingClientRect().width <= 0) continue;
+    el.focus();
+    try {
+      var desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+      if (desc && desc.set) desc.set.call(el, phone);
+      else el.value = phone;
+    } catch (e) { el.value = phone; }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  return false;
+}
+
+function _xhsClickSendSms() {
+  var keywords = ['获取验证码', '发送验证码'];
+  for (var k = 0; k < keywords.length; k++) {
+    try {
+      var escaped = keywords[k].replace(/'/g, "''");
+      var nodes = document.evaluate(
+        "//*[normalize-space(.)='" + escaped + "' or normalize-space(text())='" + escaped + "']",
+        document, null, 7, null
+      );
+      for (var i = nodes.snapshotLength - 1; i >= 0; i--) {
+        var el = nodes.snapshotItem(i);
+        if (!el) continue;
+        var rect = el.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) continue;
+        var x = rect.left + rect.width / 2;
+        var y = rect.top + rect.height / 2;
+        var opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+        el.dispatchEvent(new MouseEvent('mousedown', opts));
+        el.dispatchEvent(new MouseEvent('mouseup', opts));
+        el.dispatchEvent(new MouseEvent('click', opts));
+        return true;
+      }
+    } catch(e) {}
+  }
+  return false;
+}
+
+function _xhsFillSmsCode(code) {
+  var inputs = Array.from(document.querySelectorAll('input'));
+  for (var i = 0; i < inputs.length; i++) {
+    var el = inputs[i];
+    if (el.offsetParent == null && el.getBoundingClientRect().width <= 0) continue;
+    var placeholder = (el.placeholder || '').toLowerCase();
+    var maxLen = el.maxLength;
+    var isCodeInput = placeholder.indexOf('验证码') !== -1 || placeholder.indexOf('code') !== -1 ||
+      (maxLen >= 4 && maxLen <= 8 && el.type !== 'tel' && el.type !== 'email');
+    if (!isCodeInput) continue;
+    el.focus();
+    try {
+      var desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+      if (desc && desc.set) desc.set.call(el, code);
+      else el.value = code;
+    } catch (e) { el.value = code; }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }
+  return false;
+}
+
+function _xhsClickLogin() {
+  var btns = Array.from(document.querySelectorAll('button, [role="button"]'));
+  for (var i = 0; i < btns.length; i++) {
+    var btn = btns[i];
+    if (btn.offsetParent == null || btn.disabled) continue;
+    var text = (btn.textContent || btn.innerText || '').trim();
+    if (text === '登录' || text === '立即登录' || text === '登录/注册' || text === '验证登录' || text === '一键登录') {
+      btn.click();
+      return true;
+    }
+  }
+  return false;
+}
+
+function _xhsClickMore() {
+  try {
+    var nodes = document.evaluate(
+      "//*[normalize-space(.)='更多' or normalize-space(text())='更多']",
+      document, null, 7, null
+    );
+    for (var i = nodes.snapshotLength - 1; i >= 0; i--) {
+      var el = nodes.snapshotItem(i);
+      if (!el) continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) continue;
+      var x = rect.left + rect.width / 2;
+      var y = rect.top + rect.height / 2;
+      var opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      el.dispatchEvent(new MouseEvent('mouseup', opts));
+      el.dispatchEvent(new MouseEvent('click', opts));
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+function _xhsClickLogout() {
+  try {
+    var nodes = document.evaluate(
+      "//*[normalize-space(.)='退出登录' or normalize-space(text())='退出登录']",
+      document, null, 7, null
+    );
+    for (var i = nodes.snapshotLength - 1; i >= 0; i--) {
+      var el = nodes.snapshotItem(i);
+      if (!el) continue;
+      var rect = el.getBoundingClientRect();
+      if (rect.width < 4 || rect.height < 4) continue;
+      var x = rect.left + rect.width / 2;
+      var y = rect.top + rect.height / 2;
+      var opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y };
+      el.dispatchEvent(new MouseEvent('mousedown', opts));
+      el.dispatchEvent(new MouseEvent('mouseup', opts));
+      el.dispatchEvent(new MouseEvent('click', opts));
+      return true;
+    }
+  } catch (e) {}
+  return false;
+}
+
+function clearXhsCookiesBg(callback) {
+  var domains = ['.xiaohongshu.com', 'www.xiaohongshu.com', '.rednote.com', 'www.rednote.com'];
+  var total = 0;
+  var pending = domains.length;
+  domains.forEach(function(domain) {
+    chrome.cookies.getAll({ domain: domain }, function(cookies) {
+      if (!cookies || !cookies.length) {
+        pending--;
+        if (pending <= 0 && callback) callback(total);
+        return;
+      }
+      var dp = cookies.length;
+      cookies.forEach(function(cookie) {
+        var protocol = cookie.secure ? 'https://' : 'http://';
+        var removeUrl = protocol + cookie.domain.replace(/^\./, '') + cookie.path;
+        chrome.cookies.remove({ url: removeUrl, name: cookie.name }, function() {
+          total++;
+          dp--;
+          if (dp <= 0) {
+            pending--;
+            if (pending <= 0 && callback) callback(total);
+          }
+        });
+      });
+    });
+  });
+}
+
+/**
+ * 后台自动退出 → 切换账号 → 自动登录，完成后回调 callback
+ */
+function doBackgroundAutoSwitchAccount(tabId, nextIndex, accountList, callback) {
+  var acc = accountList[nextIndex];
+  if (!acc) { callback(false); return; }
+  var phone = (acc.phone || '').trim();
+  var codeUrl = (acc.codeUrl || '').trim();
+
+  pushAutoTaskLogLine('正在退出当前账号…');
+  setAutoTaskStatusInStorage('正在退出当前账号…');
+
+  chrome.scripting.executeScript({
+    target: { tabId: tabId },
+    world: 'MAIN',
+    func: _xhsClickMore,
+    args: []
+  }, function() {
+    setTimeout(function() {
+      chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        world: 'MAIN',
+        func: _xhsClickLogout,
+        args: []
+      }, function() {
+        setTimeout(function() {
+          clearXhsCookiesBg(function(n) {
+            pushAutoTaskLogLine('已退出，清除 ' + n + ' 个 Cookie');
+          });
+
+          chrome.storage.local.set({ selectedAccountIndex: nextIndex });
+          pushAutoTaskLogLine('切换到账号 ' + (nextIndex + 1) + '：' + phone);
+          setAutoTaskStatusInStorage('等待10秒后登录账号 ' + (nextIndex + 1));
+
+          var remain = 10;
+          var switchTimer = setInterval(function() {
+            remain--;
+            if (remain > 0) {
+              setAutoTaskStatusInStorage('切换账号中… ' + remain + ' 秒后自动登录');
+            } else {
+              clearInterval(switchTimer);
+            }
+          }, 1000);
+
+          setTimeout(function() {
+            clearInterval(switchTimer);
+            if (!phone || !codeUrl) {
+              pushAutoTaskLogLine('账号 ' + (nextIndex + 1) + ' 缺少手机号或接码链接，跳过');
+              callback(false);
+              return;
+            }
+
+            pushAutoTaskLogLine('开始自动登录账号 ' + (nextIndex + 1) + '：' + phone);
+            setAutoTaskStatusInStorage('正在登录账号 ' + (nextIndex + 1) + '…');
+
+            chrome.tabs.update(tabId, { url: 'https://www.rednote.com' }, function() {
+              waitForTabComplete(tabId).then(function() {
+                setTimeout(function() {
+                  chrome.scripting.executeScript({
+                    target: { tabId: tabId },
+                    world: 'MAIN',
+                    func: _xhsFillPhone,
+                    args: [phone]
+                  }, function(results) {
+                    if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) {
+                      pushAutoTaskLogLine('未找到手机号输入框');
+                      callback(false);
+                      return;
+                    }
+                    setTimeout(function() {
+                      chrome.scripting.executeScript({
+                        target: { tabId: tabId },
+                        world: 'MAIN',
+                        func: _xhsClickSendSms,
+                        args: []
+                      }, function(results) {
+                        if (chrome.runtime.lastError || !results || !results[0] || !results[0].result) {
+                          pushAutoTaskLogLine('未找到发送验证码按钮');
+                          callback(false);
+                          return;
+                        }
+                        var maxPoll = 40;
+                        var pollCount = 0;
+                        function pollSmsCode() {
+                          if (backgroundAutoTaskAbort) { callback(false); return; }
+                          if (pollCount >= maxPoll) {
+                            pushAutoTaskLogLine('接码超时');
+                            callback(false);
+                            return;
+                          }
+                          pollCount++;
+                          setAutoTaskStatusInStorage('等待接码中… (' + pollCount + '/' + maxPoll + ')');
+                          fetch(codeUrl)
+                            .then(function(res) { return res.text(); })
+                            .then(function(text) {
+                              var match = (text || '').match(/\bcode\b[^0-9]*(\d+)/i);
+                              var code = match ? match[1] : '';
+                              if (!code) {
+                                setTimeout(pollSmsCode, 3000);
+                                return;
+                              }
+                              pushAutoTaskLogLine('收到验证码：' + code);
+                              chrome.scripting.executeScript({
+                                target: { tabId: tabId },
+                                world: 'MAIN',
+                                func: _xhsFillSmsCode,
+                                args: [code]
+                              }, function() {
+                                setTimeout(function() {
+                                  chrome.scripting.executeScript({
+                                    target: { tabId: tabId },
+                                    world: 'MAIN',
+                                    func: _xhsClickLogin,
+                                    args: []
+                                  }, function() {
+                                    setTimeout(function() {
+                                      pushAutoTaskLogLine('账号 ' + (nextIndex + 1) + ' 登录完成');
+                                      setAutoTaskStatusInStorage('账号 ' + (nextIndex + 1) + ' 登录完成');
+                                      callback(true);
+                                    }, 3000);
+                                  });
+                                }, 800);
+                              });
+                            })
+                            .catch(function() { setTimeout(pollSmsCode, 3000); });
+                        }
+                        setTimeout(pollSmsCode, 3000);
+                      });
+                    }, 600);
+                  });
+                }, 5000);
+              });
+            });
+          }, 10000);
+        }, 2000);
+      });
+    }, 800);
+  });
+}
+
+function ensureContentScriptReady(tabId) {
+  return new Promise(function(resolve) {
+    try {
+      chrome.tabs.sendMessage(tabId, { type: 'dataCrawlerPing' }, function(response) {
+        if (chrome.runtime.lastError || !response || !response.pong) {
+          pushAutoTaskLogLine('content script 未就绪，刷新页面…');
+          chrome.tabs.reload(tabId, {}, function() {
+            waitForTabComplete(tabId).then(function() {
+              setTimeout(resolve, 2000);
+            });
+          });
+        } else {
+          resolve();
+        }
+      });
+    } catch (e) {
+      chrome.tabs.reload(tabId, {}, function() {
+        waitForTabComplete(tabId).then(function() {
+          setTimeout(resolve, 2000);
+        });
+      });
+    }
+  });
+}
+
 function runBackgroundAutoTaskLoop() {
   backgroundAutoTaskRunning = true;
   function done() {
@@ -440,11 +804,80 @@ function runBackgroundAutoTaskLoop() {
     });
   }
 
+  function checkAndSwitchIfNeeded(thenContinue) {
+    chrome.storage.local.get(['accountList', 'selectedAccountIndex', 'accountCollectStats'], function(o) {
+      var accs = (o.accountList || []).map(function(item) {
+        return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim(), maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 10 };
+      });
+      var accIdx = parseInt(o.selectedAccountIndex, 10) || 0;
+      var stats = o.accountCollectStats || {};
+
+      if (!accs.length || !isAccountExceededTodayBg(accs, stats, accIdx)) {
+        thenContinue();
+        return;
+      }
+
+      var todayCount = getAccountTodayCollectCountBg(stats, accIdx);
+      var maxCount = accs[accIdx] ? accs[accIdx].maxCollectCount : 10;
+      pushAutoTaskLogLine('账号 ' + (accIdx + 1) + ' 今日已采集 ' + todayCount + '/' + maxCount + '，已达上限');
+
+      if (areAllAccountsExceededTodayBg(accs, stats)) {
+        var now = new Date();
+        var nextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 0);
+        var minToMidnight = Math.ceil((nextMidnight - now) / 60000);
+        var waitSec = 15;
+        var statusMsg = '所有账号今日采集均已达上限，' + waitSec + '秒后重新检测（距明日重置约' + minToMidnight + '分钟）';
+        setAutoTaskStatusInStorage(statusMsg);
+        pushAutoTaskLogLine(statusMsg);
+        sendCountdownToPage(true, '等待重新检测', waitSec);
+        setTimeout(function() { checkAndSwitchIfNeeded(thenContinue); }, waitSec * 1000);
+        return;
+      }
+
+      var nextIdx = findNextAvailableAccountBg(accs, stats, accIdx);
+      if (nextIdx < 0) {
+        var now2 = new Date();
+        var nextMidnight2 = new Date(now2.getFullYear(), now2.getMonth(), now2.getDate() + 1, 0, 0, 0);
+        var minToMidnight2 = Math.ceil((nextMidnight2 - now2) / 60000);
+        var waitSec2 = 15;
+        var statusMsg2 = '无可用账号，' + waitSec2 + '秒后重新检测（距明日重置约' + minToMidnight2 + '分钟）';
+        setAutoTaskStatusInStorage(statusMsg2);
+        pushAutoTaskLogLine(statusMsg2);
+        sendCountdownToPage(true, '等待重新检测', waitSec2);
+        setTimeout(function() { checkAndSwitchIfNeeded(thenContinue); }, waitSec2 * 1000);
+        return;
+      }
+
+      pushAutoTaskLogLine('准备切换到账号 ' + (nextIdx + 1));
+      getTab().then(function(tab) {
+        if (!tab || !tab.id) {
+          pushAutoTaskLogLine('无法获取标签页，无法切换账号');
+          done();
+          return;
+        }
+        doBackgroundAutoSwitchAccount(tab.id, nextIdx, accs, function(success) {
+          if (success) {
+            thenContinue();
+          } else {
+            pushAutoTaskLogLine('账号切换/登录失败，15秒后重试');
+            setTimeout(function() { checkAndSwitchIfNeeded(thenContinue); }, 15000);
+          }
+        });
+      });
+    });
+  }
+
   function loop() {
     if (backgroundAutoTaskAbort) {
       done();
       return;
     }
+    checkAndSwitchIfNeeded(loopInner);
+  }
+
+  function loopInner() {
+    if (backgroundAutoTaskAbort) { done(); return; }
+    chrome.storage.local.remove(['searchNotesPages', 'searchNotesResult']);
     setAutoTaskStatusInStorage('正在获取任务…');
     pushAutoTaskLogLine('正在获取任务…');
     sendCountdownToPage(true, '请求关键词…', 0);
@@ -567,11 +1000,14 @@ function runBackgroundAutoTaskLoop() {
               chrome.tabs.update(tab.id, { url: getSearchBaseUrl(tabUrl) }, function() {
                 waitForTabComplete(tab.id).then(function() {
                   if (backgroundAutoTaskAbort) { done(); return; }
-                  setTimeout(injectAndNext, 800);
+                  setTimeout(injectAndNext, 2000);
                 });
               });
             } else {
-              injectAndNext();
+              ensureContentScriptReady(tab.id).then(function() {
+                if (backgroundAutoTaskAbort) { done(); return; }
+                injectAndNext();
+              });
             }
           }
           doNext();

@@ -225,6 +225,24 @@ window.addEventListener('message', function(event) {
             msg += ' code=' + (data.code != null ? String(data.code) : '-');
             msg += ' message=' + (data.message != null && data.message !== '' ? String(data.message) : '-');
           }
+          if (pageNum === 1) {
+            chrome.storage.local.get(['selectedAccountIndex', 'accountCollectStats', 'accountList'], function(statsObj) {
+              var accIdx = parseInt(statsObj.selectedAccountIndex, 10) || 0;
+              var stats = statsObj.accountCollectStats || {};
+              var accs = statsObj.accountList || [];
+              var accKey = String(accIdx);
+              var today = new Date();
+              var todayStr = today.getFullYear() + '-' + String(today.getMonth() + 1).padStart(2, '0') + '-' + String(today.getDate()).padStart(2, '0');
+              if (!stats[accKey]) stats[accKey] = {};
+              stats[accKey][todayStr] = (stats[accKey][todayStr] || 0) + 1;
+              var newCount = stats[accKey][todayStr];
+              chrome.storage.local.set({ accountCollectStats: stats });
+              var maxC = accs[accIdx] && accs[accIdx].maxCollectCount != null ? accs[accIdx].maxCollectCount : 10;
+              var countMsg = '账号' + (accIdx + 1) + ' 今日累计采集：' + newCount + '/' + maxC;
+              console.log('[DataCrawler] ' + countMsg);
+              chrome.storage.local.set({ autoTaskLogLine: { time: Date.now(), text: '✓ ' + msg + ' | ' + countMsg } });
+            });
+          }
           console.log('[DataCrawler] 搜索数据回传:', msg, result);
           chrome.storage.local.set({ autoTaskCallbackStatus: { success: true, message: msg, time: Date.now() } });
         })
@@ -270,6 +288,10 @@ window.addEventListener('message', function(event) {
 // ---------- 自动任务时页面左上角「请求关键词」倒计时浮层 ----------
 var dataCrawlerCountdownIntervalId = null;
 chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
+  if (msg.type === 'dataCrawlerPing') {
+    sendResponse({ pong: true });
+    return;
+  }
   if (msg.type !== 'dataCrawlerCountdown') return;
   var el = document.getElementById('data-crawler-countdown-box');
   if (msg.show) {

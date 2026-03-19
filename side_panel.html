@@ -353,6 +353,37 @@
       margin-top: 0;
     }
     .account-max-collect:focus { outline: none; border-color: #e74c3c; }
+    .account-add-wrap {
+      display: flex;
+      gap: 8px;
+      align-items: flex-start;
+      margin-bottom: 6px;
+    }
+    .account-batch-input {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 8px;
+      font-size: 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      resize: vertical;
+      font-family: inherit;
+      line-height: 1.4;
+    }
+    .account-batch-input:focus { outline: none; border-color: #e74c3c; }
+    .account-add-wrap .btn-add {
+      flex-shrink: 0;
+      padding: 8px 12px;
+      font-size: 13px;
+      color: #fff;
+      background: #e74c3c;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      align-self: flex-start;
+      margin-top: 2px;
+    }
+    .account-add-wrap .btn-add:hover { background: #c0392b; }
   </style>
 </head>
 <body>
@@ -383,6 +414,10 @@
       </div>
       <label>登录账号（自动登录时使用下方选中的账号）</label>
       <div id="accountListContainer" class="account-list"></div>
+      <div class="account-add-wrap">
+        <textarea id="accountBatchInput" class="account-batch-input" rows="3" placeholder="批量粘贴：每行一个账号，手机号与接码链接用 Tab 或空格分隔&#10;例：7534788611&#9;https://zefaka.xyz/api/..."></textarea>
+        <button type="button" class="btn-add" id="btnBatchAddAccount">批量添加</button>
+      </div>
       <div class="keyword-add-row account-add-row">
         <input type="text" id="accountNewPhone" placeholder="手机号" />
         <input type="text" id="accountNewCodeUrl" placeholder="接码链接" />

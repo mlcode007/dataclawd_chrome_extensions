@@ -326,6 +326,38 @@ function addAccountFromForm() {
   renderAccountList();
 }
 
+function batchAddAccounts() {
+  var textarea = document.getElementById('accountBatchInput');
+  if (!textarea) return;
+  var text = (textarea.value || '').trim();
+  if (!text) return;
+  var lines = text.split(/\n/);
+  var added = 0;
+  lines.forEach(function(line) {
+    line = line.trim();
+    if (!line) return;
+    var parts = line.split(/\t+/);
+    if (parts.length < 2) parts = line.split(/\s+/);
+    var phone = (parts[0] || '').trim();
+    var codeUrl = (parts.slice(1).join('') || '').trim();
+    if (!phone) return;
+    var exists = accountList.some(function(acc) { return acc.phone === phone; });
+    if (exists) return;
+    accountList.push({ phone: phone, codeUrl: codeUrl, maxCollectCount: 200 });
+    added++;
+  });
+  if (added > 0) {
+    selectedAccountIndex = accountList.length - 1;
+    saveAccounts();
+    renderAccountList();
+    textarea.value = '';
+    pushAutoTaskLogLine('批量添加了 ' + added + ' 个账号');
+  }
+}
+
+var btnBatchAddAccount = document.getElementById('btnBatchAddAccount');
+if (btnBatchAddAccount) btnBatchAddAccount.addEventListener('click', batchAddAccounts);
+
 // 接口任务自动执行（与 Python 一致：用 maa_router/pop 获取完整任务对象，供回传 kwInfo）
 var REDIS_KEY_KEYWORD_TASKS = 'Interest:KeywordTasks:2:551';
 var autoTaskRunning = false;

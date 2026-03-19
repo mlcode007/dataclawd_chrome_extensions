@@ -10,3 +10,5 @@ node_modules/
 # 系统与 IDE
 .DS_Store
 .idea/
+
+script/*.py

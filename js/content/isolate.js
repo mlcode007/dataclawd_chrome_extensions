@@ -190,6 +190,8 @@ window.addEventListener('message', function(event) {
     });
 
     // 每次拦截后回传数据：用当前关键词任务 + 本页原始 items（与 data_back.txt 格式一致）调用回传接口
+    // interceptedKeyword 从拦截请求 body 中提取，确保回传的关键词与实际搜索一致
+    var interceptedKeyword = event.data.interceptedKeyword || '';
     chrome.storage.local.get('currentKeywordTask', function(res) {
       var kwInfo = res.currentKeywordTask;
       if (!kwInfo || typeof kwInfo !== 'object') return;
@@ -198,14 +200,27 @@ window.addEventListener('message', function(event) {
       var body = {};
       var k;
       for (k in kwInfo) if (kwInfo.hasOwnProperty(k)) body[k] = kwInfo[k];
+      if (interceptedKeyword) {
+        body.Keywords = interceptedKeyword;
+        body.interceptedKeyword = interceptedKeyword;
+      }
       body.items = items;
+      var taskKw = kwInfo.Keywords || '';
+      var kwMatch = interceptedKeyword && taskKw ? (interceptedKeyword === taskKw) : null;
+      var kwTag = interceptedKeyword
+        ? '「' + interceptedKeyword + '」'
+          + (kwMatch === false ? '（≠任务词「' + taskKw + '」）' : '')
+        : (taskKw ? '「' + taskKw + '」' : '');
+      var pageTag = '（第' + pageNum + '页）';
+      console.log('[DataCrawler] 回传关键词（拦截）:', interceptedKeyword || '(无)', '| 任务关键词:', taskKw || '(无)', '| 页码:', pageNum);
       console.log(body);
       sendXhsSearchResult(body)
         .then(function(result) {
           var data = result && result.data;
           var attempt = result && result.attempt;
-          var attemptStr = attempt != null ? '（第' + attempt + '次）' : '';
-          var msg = '回传成功' + attemptStr;
+          var msg = '回传成功' + (attempt > 1 ? '（重试' + (attempt - 1) + '次）' : '');
+          if (kwTag) msg += ' ' + kwTag;
+          msg += ' ' + pageTag;
           if (data && (data.code != null || (data.message != null && data.message !== ''))) {
             msg += ' code=' + (data.code != null ? String(data.code) : '-');
             msg += ' message=' + (data.message != null && data.message !== '' ? String(data.message) : '-');
@@ -214,7 +229,9 @@ window.addEventListener('message', function(event) {
           chrome.storage.local.set({ autoTaskCallbackStatus: { success: true, message: msg, time: Date.now() } });
         })
         .catch(function(err) {
-          var msg = err && err.message || String(err);
+          var msg = (err && err.message || String(err));
+          if (kwTag) msg += ' ' + kwTag;
+          msg += ' ' + pageTag;
           console.error('[DataCrawler] 搜索数据回传失败', err);
           chrome.storage.local.set({ autoTaskCallbackStatus: { success: false, message: msg, time: Date.now() } });
         });

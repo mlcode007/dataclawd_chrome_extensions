@@ -48,9 +48,19 @@
     return { pageNum: pageNum, isFirstPage: isFirst };
   }
 
-  function sendResult(data, isFirstPage, pageNum) {
+  // 从请求 body 中提取搜索关键词（search/notes 接口的 POST body 含 keyword 字段）
+  function extractKeywordFromBody(body) {
+    if (!body) return '';
     try {
-      window.postMessage({ type: 'XHS_SEARCH_RESULT', data: data, isFirstPage: !!isFirstPage, pageNum: pageNum != null ? pageNum : 1 }, '*');
+      var b = typeof body === 'string' ? JSON.parse(body) : body;
+      if (b && typeof b.keyword === 'string') return b.keyword;
+    } catch (e) {}
+    return '';
+  }
+
+  function sendResult(data, isFirstPage, pageNum, interceptedKeyword) {
+    try {
+      window.postMessage({ type: 'XHS_SEARCH_RESULT', data: data, isFirstPage: !!isFirstPage, pageNum: pageNum != null ? pageNum : 1, interceptedKeyword: interceptedKeyword || '' }, '*');
     } catch (e) {}
   }
 
@@ -208,10 +218,11 @@
     var pageNum = getRequestPage(u, body);
     var firstPage = isRequestPage1(u, body);
     if (isTargetUrl(u)) {
+      var kw = extractKeywordFromBody(body);
       return _fetch.apply(this, arguments).then(function(r) {
         var c = r.clone();
-        c.json().then(function(data) { sendResult(data, firstPage, pageNum); }).catch(function() {
-          r.clone().text().then(function(t) { sendResult({ _raw: t }, firstPage, pageNum); });
+        c.json().then(function(data) { sendResult(data, firstPage, pageNum, kw); }).catch(function() {
+          r.clone().text().then(function(t) { sendResult({ _raw: t }, firstPage, pageNum, kw); });
         });
         return r;
       });
@@ -247,11 +258,12 @@
       var pageNum = getRequestPage(xhr._url, xhr._body);
       var firstPage = isRequestPage1(xhr._url, xhr._body);
       if (isTargetUrl(xhr._url)) {
+        var kw = extractKeywordFromBody(xhr._body);
         try {
           var data = JSON.parse(xhr.responseText);
-          sendResult(data, firstPage, pageNum);
+          sendResult(data, firstPage, pageNum, kw);
         } catch (e) {
-          sendResult({ _raw: xhr.responseText }, firstPage, pageNum);
+          sendResult({ _raw: xhr.responseText }, firstPage, pageNum, kw);
         }
         return;
       }

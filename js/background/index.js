@@ -226,6 +226,13 @@ function clickPublishTimeOption(optionText) {
   return false;
 }
 
+// 注入到页面：滚动到底部触发下一页懒加载
+function scrollToLoadMore() {
+  var h = document.documentElement.scrollHeight || document.body.scrollHeight;
+  window.scrollTo(0, h);
+  return true;
+}
+
 function parseKeywordTaskResponse(data) {
   if (!data || typeof data !== 'object') return [];
   var keywords = [];
@@ -372,6 +379,45 @@ function applyPublishTimeFilterAfterSearch(tabId, optionText) {
   return promise;
 }
 
+// 搜索/筛选完成后，检查第二页数据是否已拦截；未拦截则滚动触发加载，已拦截则跳过
+function scrollAndWaitForPage2(tabId, callback) {
+  if (backgroundAutoTaskAbort) { callback(); return; }
+  // 先等待第一页渲染，同时第二页可能已经自动触发
+  setTimeout(function() {
+    if (backgroundAutoTaskAbort) { callback(); return; }
+    chrome.storage.local.get('searchNotesPages', function(res) {
+      var pages = res.searchNotesPages || [];
+      if (pages.length >= 2) {
+        pushAutoTaskLogLine('第二页已自动加载（共' + pages.length + '页），跳过滚动');
+        callback();
+        return;
+      }
+      pushAutoTaskLogLine('滚动加载第二页…');
+      setAutoTaskStatusInStorage('滚动加载第二页…');
+      chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        world: 'MAIN',
+        func: scrollToLoadMore,
+        args: []
+      }, function() {
+        if (chrome.runtime.lastError) { callback(); return; }
+        setTimeout(function() {
+          if (backgroundAutoTaskAbort) { callback(); return; }
+          chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            world: 'MAIN',
+            func: scrollToLoadMore,
+            args: []
+          }, function() {
+            if (chrome.runtime.lastError) { callback(); return; }
+            setTimeout(callback, 3000);
+          });
+        }, 2000);
+      });
+    });
+  }, 2000);
+}
+
 function runBackgroundAutoTaskLoop() {
   backgroundAutoTaskRunning = true;
   function done() {
@@ -488,15 +534,18 @@ function runBackgroundAutoTaskLoop() {
                       }, ms);
                     });
                   };
+                  var afterSearchScroll = function() {
+                    scrollAndWaitForPage2(tab.id, thenWait);
+                  };
                   if (filterVal) {
                     setAutoTaskStatusInStorage(statusPrefix + ' · 应用筛选「' + filterVal + '」');
                     applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
-                      thenWait();
+                      afterSearchScroll();
                     }).catch(function() {
-                      thenWait();
+                      afterSearchScroll();
                     });
                   } else {
-                    thenWait();
+                    afterSearchScroll();
                   }
                 });
               });

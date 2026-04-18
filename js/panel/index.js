@@ -64,8 +64,10 @@ document.getElementById('btnGetUrl').addEventListener('click', async () => {
 // 多关键词配置：增删、持久化、按顺序执行搜索
 var pluginSearchKeywords = [];
 var KEYWORD_STORAGE_KEY = 'pluginSearchKeywords';
-var SEARCH_BASE_URL = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
-var REDNOTE_SEARCH_BASE_URL = 'https://www.rednote.com/search_result?source=web_search_result_notes';
+var SEARCH_SITE_BASE_STORAGE_KEY = 'searchSiteBaseUrl';
+var SEARCH_SITE_BASE_DEFAULT = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
+/** 当前使用的搜索页基础地址（与 chrome.storage 同步） */
+var searchSiteBaseUrl = SEARCH_SITE_BASE_DEFAULT;
 var EXECUTE_WAIT_MS = 5000;
 
 /** 是否为小红书/红书域名（xiaohongshu.com 或 rednote.com） */
@@ -74,16 +76,33 @@ function isXhsLikeHost(url) {
   return u.indexOf('xiaohongshu.com') !== -1 || u.indexOf('rednote.com') !== -1;
 }
 
-/** 根据当前标签页 URL 返回对应站点的搜索页地址 */
-function getSearchBaseUrl(tabUrl) {
-  return isXhsLikeHost(tabUrl) && (tabUrl || '').toLowerCase().indexOf('rednote.com') !== -1
-    ? REDNOTE_SEARCH_BASE_URL
-    : SEARCH_BASE_URL;
+function normalizeSearchSiteBaseUrl(raw) {
+  var d = SEARCH_SITE_BASE_DEFAULT;
+  var s = (raw || '').trim();
+  if (!s) return d;
+  s = s.replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(s)) return d;
+  if (s.indexOf('search_result') !== -1) return s;
+  return s + '/search_result?source=web_search_result_notes';
+}
+
+/** 侧栏配置的搜索页基础地址 */
+function getSearchBaseUrl() {
+  return searchSiteBaseUrl || SEARCH_SITE_BASE_DEFAULT;
+}
+
+/** 从配置的搜索页地址解析站点首页（用于自动登录等） */
+function getSearchSiteOrigin() {
+  try {
+    return new URL(getSearchBaseUrl()).origin;
+  } catch (e) {
+    return 'https://www.xiaohongshu.com';
+  }
 }
 
 /** 构造带关键词的搜索页 URL（优先走地址栏，避免 React 受控输入框注入成 undefined） */
-function buildSearchResultUrl(tabUrl, keyword) {
-  var base = getSearchBaseUrl(tabUrl);
+function buildSearchResultUrl(keyword) {
+  var base = getSearchBaseUrl();
   var kw = keyword == null ? '' : String(keyword).trim();
   if (!kw) return base;
   return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'keyword=' + encodeURIComponent(kw);
@@ -135,11 +154,14 @@ function getApiHost() {
 }
 
 function loadApiHost() {
-  chrome.storage.local.get([API_HOST_STORAGE_KEY, SMS_PHONE_STORAGE_KEY, SMS_CODE_URL_STORAGE_KEY, ACCOUNT_LIST_STORAGE_KEY, SELECTED_ACCOUNT_INDEX_KEY, ACCOUNT_COLLECT_STATS_KEY], function(o) {
+  chrome.storage.local.get([API_HOST_STORAGE_KEY, SMS_PHONE_STORAGE_KEY, SMS_CODE_URL_STORAGE_KEY, ACCOUNT_LIST_STORAGE_KEY, SELECTED_ACCOUNT_INDEX_KEY, ACCOUNT_COLLECT_STATS_KEY, SEARCH_SITE_BASE_STORAGE_KEY], function(o) {
     var v = (o[API_HOST_STORAGE_KEY] || '').trim();
     apiHost = v || getApiHostDefault();
     var input = document.getElementById('apiHostInput');
     if (input) input.value = apiHost;
+    searchSiteBaseUrl = normalizeSearchSiteBaseUrl(o[SEARCH_SITE_BASE_STORAGE_KEY]);
+    var searchInput = document.getElementById('searchSiteBaseInput');
+    if (searchInput) searchInput.value = searchSiteBaseUrl;
     smsPhone = (o[SMS_PHONE_STORAGE_KEY] || '').trim();
     smsCodeUrl = (o[SMS_CODE_URL_STORAGE_KEY] || '').trim();
     var list = o[ACCOUNT_LIST_STORAGE_KEY];
@@ -168,6 +190,15 @@ function saveApiHost() {
   var v = (input.value || '').trim() || getApiHostDefault();
   apiHost = v;
   chrome.storage.local.set({ apiHost: v });
+}
+
+function saveSearchSiteBase() {
+  var input = document.getElementById('searchSiteBaseInput');
+  if (!input) return;
+  var v = normalizeSearchSiteBaseUrl(input.value);
+  searchSiteBaseUrl = v;
+  input.value = v;
+  chrome.storage.local.set({ searchSiteBaseUrl: v });
 }
 
 function saveAccounts() {
@@ -622,7 +653,7 @@ function runExecuteSearch() {
       }
       var statusPrefix = '执行中 ' + (index + 1) + '/' + pluginSearchKeywords.length + '：' + keyword;
       setExecuteStatus(statusPrefix);
-      var url = buildSearchResultUrl(tab.url || '', keyword);
+      var url = buildSearchResultUrl(keyword);
       chrome.tabs.update(tab.id, { url: url }, function() {
         if (chrome.runtime.lastError) {
           setExecuteStatus('无法打开搜索页：' + chrome.runtime.lastError.message);
@@ -727,6 +758,8 @@ if (autoTaskRunInBackgroundEl) autoTaskRunInBackgroundEl.addEventListener('chang
 loadApiHost();
 var btnSaveApiHost = document.getElementById('btnSaveApiHost');
 if (btnSaveApiHost) btnSaveApiHost.addEventListener('click', function() { saveApiHost(); });
+var btnSaveSearchSiteBase = document.getElementById('btnSaveSearchSiteBase');
+if (btnSaveSearchSiteBase) btnSaveSearchSiteBase.addEventListener('click', function() { saveSearchSiteBase(); });
 
 var smsCodeResultEl = document.getElementById('smsCodeResult');
 
@@ -967,7 +1000,7 @@ function runSingleKeywordSearch(tab, keyword, needNavigate) {
       resolve(false);
       return;
     }
-    var url = buildSearchResultUrl(tab.url || '', kw);
+    var url = buildSearchResultUrl(kw);
     chrome.tabs.update(tab.id, { url: url }, function() {
       if (chrome.runtime.lastError) {
         resolve(false);
@@ -1174,7 +1207,7 @@ function runAutoTaskLoop() {
           sendCountdownToPage(true, '执行中 ' + (index + 1) + '/' + total, 0);
           var kwInfo = taskInfos[index] || taskInfos[0] || { Keywords: keyword };
           chrome.storage.local.set({ currentKeywordTask: kwInfo }, function() {
-            var url = buildSearchResultUrl(tab.url || '', keyword);
+            var url = buildSearchResultUrl(keyword);
             chrome.tabs.update(tab.id, { url: url }, function() {
               if (chrome.runtime.lastError) {
                 var acc = accountList[selectedAccountIndex];
@@ -1706,7 +1739,7 @@ function doAutoLogout() {
     var isXhsTab = tabUrl.indexOf('xiaohongshu.com') !== -1 || tabUrl.indexOf('rednote.com') !== -1;
     var targetUrl = isXhsTab
       ? (tabUrl.indexOf('rednote.com') !== -1 ? 'https://www.rednote.com' : 'https://www.xiaohongshu.com')
-      : 'https://www.rednote.com';
+      : getSearchSiteOrigin();
 
     function tryLogout() {
       // Step 1: 点击"≡ 更多"展开菜单
@@ -1918,7 +1951,7 @@ function doAutoSwitchAccount(nextIndex, callback) {
               pushAutoTaskLogLine('开始自动登录账号 ' + (nextIndex + 1) + '：' + phone);
               setAutoTaskStatus('正在登录账号 ' + (nextIndex + 1) + '…');
 
-              chrome.tabs.update(tabId, { url: 'https://www.rednote.com' }, function() {
+              chrome.tabs.update(tabId, { url: getSearchSiteOrigin() }, function() {
                 waitForTabComplete(tabId).then(function() {
                   setTimeout(function() {
                     chrome.scripting.executeScript({
@@ -2027,7 +2060,7 @@ function doAutoLogin() {
     var isXhsTab = tabUrl.indexOf('xiaohongshu.com') !== -1 || tabUrl.indexOf('rednote.com') !== -1;
     var loginTargetUrl = isXhsTab
       ? (tabUrl.indexOf('rednote.com') !== -1 ? 'https://www.rednote.com' : 'https://www.xiaohongshu.com')
-      : 'https://www.rednote.com';
+      : getSearchSiteOrigin();
 
     chrome.tabs.update(tabId, { url: loginTargetUrl }, function() {
       setAccountStatus('等待页面加载…', 'ing');
@@ -2156,6 +2189,11 @@ chrome.storage.onChanged.addListener(function(changes, areaName) {
   if (changes[KEYWORD_STORAGE_KEY] && Array.isArray(changes[KEYWORD_STORAGE_KEY].newValue)) {
     pluginSearchKeywords = changes[KEYWORD_STORAGE_KEY].newValue;
     renderKeywordList();
+  }
+  if (changes[SEARCH_SITE_BASE_STORAGE_KEY]) {
+    searchSiteBaseUrl = normalizeSearchSiteBaseUrl(changes[SEARCH_SITE_BASE_STORAGE_KEY].newValue);
+    var sbi = document.getElementById('searchSiteBaseInput');
+    if (sbi) sbi.value = searchSiteBaseUrl;
   }
   if (changes.autoTaskLogLine && changes.autoTaskLogLine.newValue) {
     var entry = changes.autoTaskLogLine.newValue;

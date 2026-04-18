@@ -91,8 +91,8 @@ var backgroundAutoTaskRunning = false;
 var backgroundAutoTaskWaitTimeoutId = null;
 var backgroundAutoTaskCountdownTimerId = null;
 var backgroundAutoTaskDoneCallback = null;
-var SEARCH_BASE_URL = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
-var REDNOTE_SEARCH_BASE_URL = 'https://www.rednote.com/search_result?source=web_search_result_notes';
+var SEARCH_SITE_BASE_STORAGE_KEY = 'searchSiteBaseUrl';
+var SEARCH_SITE_BASE_DEFAULT = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
 
 function setAutoTaskStatusInStorage(text) {
   chrome.storage.local.set({ autoTaskStatus: text || '' });
@@ -128,17 +128,34 @@ function isXhsLikeHost(url) {
   return u.indexOf('xiaohongshu.com') !== -1 || u.indexOf('rednote.com') !== -1;
 }
 
-function getSearchBaseUrl(tabUrl) {
-  return isXhsLikeHost(tabUrl) && (tabUrl || '').toLowerCase().indexOf('rednote.com') !== -1
-    ? REDNOTE_SEARCH_BASE_URL
-    : SEARCH_BASE_URL;
+function normalizeSearchSiteBaseUrl(raw) {
+  var d = SEARCH_SITE_BASE_DEFAULT;
+  var s = (raw || '').trim();
+  if (!s) return d;
+  s = s.replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(s)) return d;
+  if (s.indexOf('search_result') !== -1) return s;
+  return s + '/search_result?source=web_search_result_notes';
 }
 
-function buildSearchResultUrl(tabUrl, keyword) {
-  var base = getSearchBaseUrl(tabUrl);
-  var kw = keyword == null ? '' : String(keyword).trim();
-  if (!kw) return base;
-  return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'keyword=' + encodeURIComponent(kw);
+function buildSearchResultUrlAsync(keyword, callback) {
+  chrome.storage.local.get([SEARCH_SITE_BASE_STORAGE_KEY], function(o) {
+    var base = normalizeSearchSiteBaseUrl(o[SEARCH_SITE_BASE_STORAGE_KEY]);
+    var kw = keyword == null ? '' : String(keyword).trim();
+    var url = !kw ? base : base + (base.indexOf('?') >= 0 ? '&' : '?') + 'keyword=' + encodeURIComponent(kw);
+    callback(url);
+  });
+}
+
+function getSearchSiteOriginFromStorage(callback) {
+  chrome.storage.local.get([SEARCH_SITE_BASE_STORAGE_KEY], function(o) {
+    var base = normalizeSearchSiteBaseUrl(o[SEARCH_SITE_BASE_STORAGE_KEY]);
+    try {
+      callback(new URL(base).origin);
+    } catch (e) {
+      callback('https://www.xiaohongshu.com');
+    }
+  });
 }
 
 function resolveSearchKeyword(primary, taskInfos, index) {
@@ -895,7 +912,8 @@ function doBackgroundAutoSwitchAccount(tabId, nextIndex, accountList, callback) 
             pushAutoTaskLogLine('开始自动登录账号 ' + (nextIndex + 1) + '：' + phone);
             setAutoTaskStatusInStorage('正在登录账号 ' + (nextIndex + 1) + '…');
 
-            chrome.tabs.update(tabId, { url: 'https://www.rednote.com' }, function() {
+            getSearchSiteOriginFromStorage(function(loginOrigin) {
+            chrome.tabs.update(tabId, { url: loginOrigin }, function() {
               waitForTabComplete(tabId).then(function() {
                 setTimeout(function() {
                   chrome.scripting.executeScript({
@@ -971,6 +989,7 @@ function doBackgroundAutoSwitchAccount(tabId, nextIndex, accountList, callback) 
                   });
                 }, 5000);
               });
+            });
             });
           }, 10000);
         }, 2000);
@@ -1145,7 +1164,7 @@ function runBackgroundAutoTaskLoop() {
             sendCountdownToPage(true, '执行中 ' + (index + 1) + '/' + total, 0);
             var kwInfo = taskInfos[index] || taskInfos[0] || { Keywords: keyword };
             chrome.storage.local.set({ currentKeywordTask: kwInfo }, function() {
-              var url = buildSearchResultUrl(tab.url || '', keyword);
+              buildSearchResultUrlAsync(keyword, function(url) {
               chrome.tabs.update(tab.id, { url: url }, function() {
                 if (chrome.runtime.lastError) {
                   chrome.storage.local.get(['selectedAccountIndex', 'accountCollectStats', 'accountList'], function(so) {
@@ -1220,6 +1239,7 @@ function runBackgroundAutoTaskLoop() {
                     });
                   }, 2000);
                 });
+              });
               });
             });
           }

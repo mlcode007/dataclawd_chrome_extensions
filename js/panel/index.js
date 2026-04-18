@@ -260,11 +260,24 @@ function getSelectedAccount() {
   return accountList[idx];
 }
 
-/** 从接码接口响应文本中提取4-8位验证码，兼容多种格式 */
+/** 从接码接口响应文本中提取4-8位验证码，兼容多种格式（含 rednote 管道分隔、中英文） */
 function extractSmsCode(text) {
   if (!text) return '';
-  var m = String(text).match(/code\s+is[:\s]*(\d{4,8})/i);
-  return m ? m[1] : '';
+  var s = String(text);
+  var patterns = [
+    /验证码是[：:\s]*(\d{4,8})/,
+    /您的验证码是[：:\s]*(\d{4,8})/,
+    /验证码为[：:\s]*(\d{4,8})/,
+    /您的验证码为[：:\s]*(\d{4,8})/,
+    /验证码[：:]\s*(\d{4,8})/,
+    /您的验证码[：:]\s*(\d{4,8})/,
+    /code\s+is[:\s]*(\d{4,8})/i
+  ];
+  for (var i = 0; i < patterns.length; i++) {
+    var m = s.match(patterns[i]);
+    if (m) return m[1];
+  }
+  return '';
 }
 
 function renderAccountList() {

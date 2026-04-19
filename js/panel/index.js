@@ -68,6 +68,10 @@ var SEARCH_SITE_BASE_STORAGE_KEY = 'searchSiteBaseUrl';
 var SEARCH_SITE_BASE_DEFAULT = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
 /** 当前使用的搜索页基础地址（与 chrome.storage 同步） */
 var searchSiteBaseUrl = SEARCH_SITE_BASE_DEFAULT;
+var AUTO_LOGIN_PAGE_STORAGE_KEY = 'autoLoginPageUrl';
+var AUTO_LOGIN_PAGE_DEFAULT = 'https://www.rednote.com';
+/** 自动登录时先打开的页面（与 chrome.storage 同步） */
+var autoLoginPageUrl = AUTO_LOGIN_PAGE_DEFAULT;
 var EXECUTE_WAIT_MS = 5000;
 
 /** 是否为小红书/红书域名（xiaohongshu.com 或 rednote.com） */
@@ -91,13 +95,33 @@ function getSearchBaseUrl() {
   return searchSiteBaseUrl || SEARCH_SITE_BASE_DEFAULT;
 }
 
-/** 从配置的搜索页地址解析站点首页（用于自动登录等） */
+/** 从配置的搜索页地址解析站点首页（用于非登录场景的站点根等） */
 function getSearchSiteOrigin() {
   try {
     return new URL(getSearchBaseUrl()).origin;
   } catch (e) {
     return 'https://www.xiaohongshu.com';
   }
+}
+
+function normalizeAutoLoginPageUrl(raw) {
+  var d = AUTO_LOGIN_PAGE_DEFAULT;
+  var s = (raw || '').trim();
+  if (!s) return d;
+  s = s.replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(s)) return d;
+  try {
+    var u = new URL(s);
+    if (!/^https?:$/i.test(u.protocol)) return d;
+    return u.href.replace(/\/$/, '') || d;
+  } catch (e) {
+    return d;
+  }
+}
+
+/** 侧栏配置的自动登录落地页 */
+function getAutoLoginPageUrl() {
+  return normalizeAutoLoginPageUrl(autoLoginPageUrl);
 }
 
 /** 构造带关键词的搜索页 URL（优先走地址栏，避免 React 受控输入框注入成 undefined） */
@@ -154,7 +178,7 @@ function getApiHost() {
 }
 
 function loadApiHost() {
-  chrome.storage.local.get([API_HOST_STORAGE_KEY, SMS_PHONE_STORAGE_KEY, SMS_CODE_URL_STORAGE_KEY, ACCOUNT_LIST_STORAGE_KEY, SELECTED_ACCOUNT_INDEX_KEY, ACCOUNT_COLLECT_STATS_KEY, SEARCH_SITE_BASE_STORAGE_KEY], function(o) {
+  chrome.storage.local.get([API_HOST_STORAGE_KEY, SMS_PHONE_STORAGE_KEY, SMS_CODE_URL_STORAGE_KEY, ACCOUNT_LIST_STORAGE_KEY, SELECTED_ACCOUNT_INDEX_KEY, ACCOUNT_COLLECT_STATS_KEY, SEARCH_SITE_BASE_STORAGE_KEY, AUTO_LOGIN_PAGE_STORAGE_KEY], function(o) {
     var v = (o[API_HOST_STORAGE_KEY] || '').trim();
     apiHost = v || getApiHostDefault();
     var input = document.getElementById('apiHostInput');
@@ -162,6 +186,9 @@ function loadApiHost() {
     searchSiteBaseUrl = normalizeSearchSiteBaseUrl(o[SEARCH_SITE_BASE_STORAGE_KEY]);
     var searchInput = document.getElementById('searchSiteBaseInput');
     if (searchInput) searchInput.value = searchSiteBaseUrl;
+    autoLoginPageUrl = normalizeAutoLoginPageUrl(o[AUTO_LOGIN_PAGE_STORAGE_KEY]);
+    var autoLoginInput = document.getElementById('autoLoginPageInput');
+    if (autoLoginInput) autoLoginInput.value = autoLoginPageUrl;
     smsPhone = (o[SMS_PHONE_STORAGE_KEY] || '').trim();
     smsCodeUrl = (o[SMS_CODE_URL_STORAGE_KEY] || '').trim();
     var list = o[ACCOUNT_LIST_STORAGE_KEY];
@@ -199,6 +226,15 @@ function saveSearchSiteBase() {
   searchSiteBaseUrl = v;
   input.value = v;
   chrome.storage.local.set({ searchSiteBaseUrl: v });
+}
+
+function saveAutoLoginPage() {
+  var input = document.getElementById('autoLoginPageInput');
+  if (!input) return;
+  var v = normalizeAutoLoginPageUrl(input.value);
+  autoLoginPageUrl = v;
+  input.value = v;
+  chrome.storage.local.set({ autoLoginPageUrl: v });
 }
 
 function saveAccounts() {
@@ -318,14 +354,17 @@ function renderAccountList() {
     var maxInput = document.createElement('input');
     maxInput.type = 'number';
     maxInput.className = 'account-max-collect';
-    maxInput.min = '1';
+    maxInput.min = '0';
     maxInput.max = '9999';
     maxInput.value = String(maxCount);
-    maxInput.title = '最大采集次数/天';
+    maxInput.title = '最大采集次数/天（0 表示本账号今日不采集）';
     maxInput.dataset.index = String(i);
     maxInput.addEventListener('change', function() {
       var idx = parseInt(this.dataset.index, 10);
-      var val = Math.max(1, parseInt(this.value, 10) || 10);
+      var parsed = parseInt(this.value, 10);
+      var val = isNaN(parsed)
+        ? (accountList[idx].maxCollectCount != null ? accountList[idx].maxCollectCount : 200)
+        : Math.max(0, parsed);
       this.value = String(val);
       accountList[idx].maxCollectCount = val;
       saveAccounts();
@@ -439,6 +478,15 @@ var REDIS_KEY_KEYWORD_TASKS = 'Interest:KeywordTasks:2:551';
 var autoTaskRunning = false;
 var autoTaskAbort = false;
 var autoTaskCountdownTimer = null;
+/** 每次启动前台自动任务递增，用于清空上一轮定时逻辑 */
+var panelAutoTaskSessionGen = 0;
+
+function clearPanelAutoTaskScheduledTimers() {
+  if (autoTaskCountdownTimer) {
+    clearInterval(autoTaskCountdownTimer);
+    autoTaskCountdownTimer = null;
+  }
+}
 
 var keywordListEl = document.getElementById('keywordList');
 var keywordNewInput = document.getElementById('keywordNewInput');
@@ -725,12 +773,26 @@ function loadAutoTaskInterval() {
 
 var AUTO_TASK_RUN_IN_BACKGROUND_KEY = 'autoTaskRunInBackground';
 var autoTaskRunInBackgroundEl = document.getElementById('autoTaskRunInBackground');
+var AUTO_TASK_AUTO_LOGIN_ENABLED_KEY = 'autoTaskAutoLoginEnabled';
+var autoTaskAutoLoginEnabledEl = document.getElementById('autoTaskAutoLoginEnabled');
 
 function loadAutoTaskRunInBackground() {
   chrome.storage.local.get([AUTO_TASK_RUN_IN_BACKGROUND_KEY], function(o) {
     var v = !!(o[AUTO_TASK_RUN_IN_BACKGROUND_KEY]);
     if (autoTaskRunInBackgroundEl) autoTaskRunInBackgroundEl.checked = v;
   });
+}
+
+function loadAutoTaskAutoLoginEnabled() {
+  chrome.storage.local.get([AUTO_TASK_AUTO_LOGIN_ENABLED_KEY], function(o) {
+    var v = o[AUTO_TASK_AUTO_LOGIN_ENABLED_KEY] === true;
+    if (autoTaskAutoLoginEnabledEl) autoTaskAutoLoginEnabledEl.checked = v;
+  });
+}
+
+function saveAutoTaskAutoLoginEnabled() {
+  var v = !!(autoTaskAutoLoginEnabledEl && autoTaskAutoLoginEnabledEl.checked);
+  chrome.storage.local.set({ autoTaskAutoLoginEnabled: v });
 }
 
 function saveAutoTaskRunInBackground() {
@@ -767,12 +829,16 @@ if (autoTaskIntervalMin) autoTaskIntervalMin.addEventListener('change', saveAuto
 if (autoTaskIntervalMax) autoTaskIntervalMax.addEventListener('change', saveAutoTaskInterval);
 loadAutoTaskRunInBackground();
 if (autoTaskRunInBackgroundEl) autoTaskRunInBackgroundEl.addEventListener('change', saveAutoTaskRunInBackground);
+loadAutoTaskAutoLoginEnabled();
+if (autoTaskAutoLoginEnabledEl) autoTaskAutoLoginEnabledEl.addEventListener('change', saveAutoTaskAutoLoginEnabled);
 
 loadApiHost();
 var btnSaveApiHost = document.getElementById('btnSaveApiHost');
 if (btnSaveApiHost) btnSaveApiHost.addEventListener('click', function() { saveApiHost(); });
 var btnSaveSearchSiteBase = document.getElementById('btnSaveSearchSiteBase');
 if (btnSaveSearchSiteBase) btnSaveSearchSiteBase.addEventListener('click', function() { saveSearchSiteBase(); });
+var btnSaveAutoLoginPage = document.getElementById('btnSaveAutoLoginPage');
+if (btnSaveAutoLoginPage) btnSaveAutoLoginPage.addEventListener('click', function() { saveAutoLoginPage(); });
 
 var smsCodeResultEl = document.getElementById('smsCodeResult');
 
@@ -795,16 +861,23 @@ function syncAutoTaskStateFromStorage() {
       updateAutoTaskButtons();
       var statusText = o.autoTaskStatus || '';
       if (autoTaskStatusEl) autoTaskStatusEl.textContent = statusText;
-      if (autoTaskCountdownTextEl) autoTaskCountdownTextEl.textContent = statusText;
+      mirrorAutoTaskStatusToCountdownLine(statusText);
     }
   });
 }
 syncAutoTaskStateFromStorage();
 
+/** 「请求关键词倒计时」行不与自动登录类状态同步（仅主状态区显示），避免倒计时行出现「正在自动登录…」 */
+function mirrorAutoTaskStatusToCountdownLine(text) {
+  var t = text || '';
+  if (t.indexOf('自动登录') !== -1) return;
+  if (autoTaskCountdownTextEl) autoTaskCountdownTextEl.textContent = t;
+}
+
 function setAutoTaskStatus(text) {
   var t = text || '';
   if (autoTaskStatusEl) autoTaskStatusEl.textContent = t;
-  if (autoTaskCountdownTextEl) autoTaskCountdownTextEl.textContent = t;
+  mirrorAutoTaskStatusToCountdownLine(t);
 }
 
 function sendCountdownToPage(show, text, seconds) {
@@ -923,10 +996,16 @@ function getRandomIntervalMs() {
   return (min + Math.random() * (max - min + 1)) * 1000;
 }
 
-function waitRandomWithCountdown(ms) {
+function waitRandomWithCountdown(ms, optionalTaskSession) {
   return new Promise(function(resolve) {
     var remainSec = Math.ceil(ms / 1000);
     function tick() {
+      if (optionalTaskSession != null && optionalTaskSession !== panelAutoTaskSessionGen) {
+        if (autoTaskCountdownTimer) clearInterval(autoTaskCountdownTimer);
+        autoTaskCountdownTimer = null;
+        resolve();
+        return;
+      }
       if (remainSec <= 0 || autoTaskAbort) {
         if (autoTaskCountdownTimer) clearInterval(autoTaskCountdownTimer);
         autoTaskCountdownTimer = null;
@@ -1057,8 +1136,94 @@ function updateAutoTaskButtons() {
   // 不禁用「按顺序执行搜索」，启动自动任务后仍可手动按顺序执行
 }
 
+/**
+ * 注入页面 MAIN：与 background 一致；含「无法访问此网站」「重新加载」或可见「登录」则 block
+ */
+function _pageShouldBlockKeywordFetch() {
+  try {
+    var blob = '';
+    if (document.body) blob += document.body.innerText || '';
+    if (document.documentElement) blob += document.documentElement.innerText || '';
+    if (document.title) blob += document.title;
+    if (blob.indexOf('无法访问此网站') !== -1) {
+      return { block: true, reason: 'unreachable' };
+    }
+    if (blob.indexOf('重新加载') !== -1) {
+      return { block: true, reason: 'reload' };
+    }
+  } catch (e) {}
+  function isVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    var rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    var st = window.getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) return false;
+    return true;
+  }
+  var byId = document.getElementById('login-btn');
+  if (byId && isVisible(byId)) return { block: true, reason: 'login' };
+  var list = document.querySelectorAll('.login-btn');
+  for (var i = 0; i < list.length; i++) {
+    var el = list[i];
+    if (!isVisible(el)) continue;
+    var t = (el.textContent || '').replace(/\s+/g, '');
+    if (t.indexOf('登录') !== -1) return { block: true, reason: 'login' };
+  }
+  return { block: false };
+}
+
+/** 拉取关键词前：连续 N 次页面校验，间隔 ms；任一次 block 则立即回调；全部通过才 cb(null) */
+var KEYWORD_FETCH_PAGE_CHECK_ROUNDS = 5;
+var KEYWORD_FETCH_PAGE_CHECK_INTERVAL_MS = 500;
+function runKeywordFetchPageChecks(tabId, isStale, cb) {
+  var passed = 0;
+  function step() {
+    if (isStale()) return;
+    chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: 'MAIN',
+      func: _pageShouldBlockKeywordFetch,
+      args: []
+    }, function(results) {
+      if (isStale()) return;
+      if (chrome.runtime.lastError) {
+        pushAutoTaskLogLine('无法检测页面状态（' + (chrome.runtime.lastError.message || '') + '），继续请求关键词任务');
+        cb(false);
+        return;
+      }
+      var verdict = results && results[0] && results[0].result;
+      if (verdict && verdict.block) {
+        cb(verdict);
+        return;
+      }
+      passed++;
+      if (passed >= KEYWORD_FETCH_PAGE_CHECK_ROUNDS) {
+        cb(null);
+        return;
+      }
+      setTimeout(step, KEYWORD_FETCH_PAGE_CHECK_INTERVAL_MS);
+    });
+  }
+  step();
+}
+
 function runAutoTaskLoop() {
-  if (autoTaskRunning) return;
+  clearPanelAutoTaskScheduledTimers();
+  panelAutoTaskSessionGen++;
+  var panelTaskSession = panelAutoTaskSessionGen;
+  function panelStale() {
+    return panelTaskSession !== panelAutoTaskSessionGen;
+  }
+  function scheduleLoop(ms) {
+    return setTimeout(function() {
+      if (panelStale()) return;
+      if (autoTaskAbort) {
+        done();
+        return;
+      }
+      loop();
+    }, ms);
+  }
   autoTaskRunning = true;
   autoTaskAbort = false;
   updateAutoTaskButtons();
@@ -1067,10 +1232,7 @@ function runAutoTaskLoop() {
     pushAutoTaskLogLine('已关闭');
     sendCountdownToPage(false);
     autoTaskRunning = false;
-    if (autoTaskCountdownTimer) {
-      clearInterval(autoTaskCountdownTimer);
-      autoTaskCountdownTimer = null;
-    }
+    clearPanelAutoTaskScheduledTimers();
     chrome.storage.local.remove('currentKeywordTask');
     updateAutoTaskButtons();
     setAutoTaskStatus('已关闭');
@@ -1093,6 +1255,7 @@ function runAutoTaskLoop() {
   }
   function checkAndSwitchAccountIfNeeded(thenContinue) {
     chrome.storage.local.get([ACCOUNT_COLLECT_STATS_KEY, ACCOUNT_LIST_STORAGE_KEY, SELECTED_ACCOUNT_INDEX_KEY], function(o) {
+      if (panelStale()) return;
       accountCollectStats = o[ACCOUNT_COLLECT_STATS_KEY] || accountCollectStats;
       if (o[ACCOUNT_LIST_STORAGE_KEY]) {
         accountList = o[ACCOUNT_LIST_STORAGE_KEY].map(function(item) {
@@ -1119,7 +1282,11 @@ function runAutoTaskLoop() {
         setAutoTaskStatus(statusMsg);
         pushAutoTaskLogLine(statusMsg);
         sendCountdownToPage(true, '等待重新检测', waitSec);
-        setTimeout(function() { checkAndSwitchAccountIfNeeded(thenContinue); }, waitSec * 1000);
+        setTimeout(function() {
+          if (panelStale()) return;
+          if (autoTaskAbort) { done(); return; }
+          checkAndSwitchAccountIfNeeded(thenContinue);
+        }, waitSec * 1000);
         return;
       }
 
@@ -1133,7 +1300,11 @@ function runAutoTaskLoop() {
         setAutoTaskStatus(statusMsg2);
         pushAutoTaskLogLine(statusMsg2);
         sendCountdownToPage(true, '等待重新检测', waitSec2);
-        setTimeout(function() { checkAndSwitchAccountIfNeeded(thenContinue); }, waitSec2 * 1000);
+        setTimeout(function() {
+          if (panelStale()) return;
+          if (autoTaskAbort) { done(); return; }
+          checkAndSwitchAccountIfNeeded(thenContinue);
+        }, waitSec2 * 1000);
         return;
       }
 
@@ -1157,6 +1328,7 @@ function runAutoTaskLoop() {
   }
 
   function loop() {
+    if (panelStale()) return;
     if (autoTaskAbort) { done(); return; }
 
     checkAndSwitchAccountIfNeeded(function() {
@@ -1165,6 +1337,7 @@ function runAutoTaskLoop() {
   }
 
   function loopInner() {
+    if (panelStale()) return;
     if (autoTaskAbort) { done(); return; }
     chrome.storage.local.remove(['searchNotesPages', 'searchNotesResult']);
     var host = getApiHost();
@@ -1172,14 +1345,22 @@ function runAutoTaskLoop() {
       setAutoTaskStatus('请先配置并保存「接口根地址」');
       pushAutoTaskLogLine('请先配置并保存「接口根地址」');
       sendCountdownToPage(true, '请求关键词', 15);
-      setTimeout(loop, 15000);
+      scheduleLoop(15000);
       return;
     }
-    setAutoTaskStatus('正在获取任务…');
-    pushAutoTaskLogLine('正在获取任务…');
-    sendCountdownToPage(true, '请求关键词…', 0);
-    fetchKeywordTask()
+
+    getTab().then(function(tab) {
+      if (panelStale()) return;
+      if (autoTaskAbort) { done(); return; }
+
+      function proceedFetchKeyword() {
+        if (panelStale()) return;
+        setAutoTaskStatus('正在获取任务…');
+        pushAutoTaskLogLine('正在获取任务…');
+        sendCountdownToPage(true, '请求关键词…', 0);
+        fetchKeywordTask()
       .then(function(result) {
+        if (panelStale()) return;
         if (autoTaskAbort) { done(); return; }
         var keywords = result.keywords || [];
         var taskInfos = result.taskInfos || [];
@@ -1187,23 +1368,26 @@ function runAutoTaskLoop() {
           setAutoTaskStatus('暂无任务，15 秒后重试');
           pushAutoTaskLogLine('暂无任务，15 秒后重试');
           sendCountdownToPage(true, '请求关键词', 15);
-          setTimeout(loop, 15000);
+          scheduleLoop(15000);
           return;
         }
         getTab().then(function(tab) {
+        if (panelStale()) return;
         if (!tab || !tab.id) {
           setAutoTaskStatus('无法获取当前标签页');
           pushAutoTaskLogLine('无法获取当前标签页');
           sendCountdownToPage(true, '请求关键词', 5);
-          setTimeout(loop, 5000);
+          scheduleLoop(5000);
           return;
         }
         var total = keywords.length;
         var index = 0;
 
         function doNext() {
+          if (panelStale()) return;
           if (autoTaskAbort) { done(); return; }
           if (index >= total) {
+            if (panelStale()) return;
             loop();
             return;
           }
@@ -1232,12 +1416,15 @@ function runAutoTaskLoop() {
                 accountCollectStats[key][today] = maxC;
                 saveCollectStats();
                 renderAccountList();
+                if (panelStale()) return;
                 loop();
                 return;
               }
               waitForTabComplete(tab.id).then(function() {
+                if (panelStale()) return;
                 if (autoTaskAbort) { done(); return; }
                 setTimeout(function() {
+                  if (panelStale()) return;
                   if (autoTaskAbort) { done(); return; }
                   refreshSearchResultTable();
                   var filterVal = publishTimeFilterEl ? (publishTimeFilterEl.value || '').trim() : '';
@@ -1247,7 +1434,7 @@ function runAutoTaskLoop() {
                     var waitText = '等待下一词 · ' + Math.ceil(ms / 1000) + ' 秒';
                     pushAutoTaskLogLine(waitText);
                     sendCountdownToPage(true, '请求关键词', Math.ceil(ms / 1000));
-                    waitRandomWithCountdown(ms).then(doNext);
+                    waitRandomWithCountdown(ms, panelTaskSession).then(doNext);
                   };
                   if (filterVal) {
                     setAutoTaskStatus(statusPrefix + ' · 应用筛选「' + filterVal + '」');
@@ -1268,7 +1455,8 @@ function runAutoTaskLoop() {
         doNext();
       });
     })
-  .catch(function(err) {
+    .catch(function(err) {
+    if (panelStale()) return;
     if (autoTaskAbort) { done(); return; }
     var msg = (err && err.message) ? err.message : String(err);
     if (msg === 'Failed to fetch') msg = '网络请求失败（请检查接口地址与网络）';
@@ -1277,8 +1465,81 @@ function runAutoTaskLoop() {
     pushAutoTaskLogLine(errText);
     sendCountdownToPage(true, '请求关键词', 15);
     console.warn('[DataCrawler] 获取任务异常', err);
-    setTimeout(loop, 15000);
+    scheduleLoop(15000);
   });
+      }
+
+      if (!tab || !tab.id) {
+        proceedFetchKeyword();
+        return;
+      }
+      var tabUrlPanel = tab.url || '';
+      if (/^chrome-error:\/\//i.test(tabUrlPanel)) {
+        setAutoTaskStatus('当前为浏览器网络错误页，暂不获取关键词任务');
+        pushAutoTaskLogLine('当前标签页为网络错误页（chrome-error），暂不获取关键词任务，15 秒后重试');
+        sendCountdownToPage(true, '等待网络', 15);
+        scheduleLoop(15000);
+        return;
+      }
+      if (!isXhsLikeHost(tab.url)) {
+        proceedFetchKeyword();
+        return;
+      }
+      runKeywordFetchPageChecks(tab.id, function() {
+        return panelStale() || autoTaskAbort;
+      }, function(verdict) {
+        if (panelStale()) return;
+        if (autoTaskAbort) { done(); return; }
+        if (verdict === false) {
+          proceedFetchKeyword();
+          return;
+        }
+        if (verdict && verdict.block) {
+          if (verdict.reason === 'login') {
+            var autoLoginCb = document.getElementById('autoTaskAutoLoginEnabled');
+            if (!autoLoginCb || !autoLoginCb.checked) {
+              setAutoTaskStatus('检测到未登录，未勾选「需要时自动登录」，请手动登录后重试');
+              pushAutoTaskLogLine('检测到未登录，未勾选「需要时自动登录」，暂不获取关键词任务，15 秒后重试');
+              sendCountdownToPage(true, '等待登录', 15);
+              scheduleLoop(15000);
+              return;
+            }
+            setAutoTaskStatus('检测到未登录，正在自动登录（与侧栏「自动登录」相同）…');
+            pushAutoTaskLogLine('检测到未登录，开始自动登录后再获取关键词任务…');
+            chrome.runtime.sendMessage({ type: 'runNavigateThenAutoLogin', tabId: tab.id }, function(response) {
+              if (chrome.runtime.lastError) {
+                pushAutoTaskLogLine('自动登录失败：' + (chrome.runtime.lastError.message || ''));
+                sendCountdownToPage(true, '等待登录', 15);
+                scheduleLoop(15000);
+                return;
+              }
+              if (panelStale()) return;
+              if (autoTaskAbort) { done(); return; }
+              if (response && response.ok) {
+                pushAutoTaskLogLine('自动登录成功，继续获取关键词任务');
+                proceedFetchKeyword();
+              } else {
+                pushAutoTaskLogLine('自动登录未完成，15 秒后重试');
+                sendCountdownToPage(true, '等待登录', 15);
+                scheduleLoop(15000);
+              }
+            });
+            return;
+          }
+          if (verdict.reason === 'unreachable') {
+            setAutoTaskStatus('检测到页面「无法访问此网站」，暂不获取关键词任务');
+            pushAutoTaskLogLine('检测到页面「无法访问此网站」，暂不获取关键词任务，15 秒后重试');
+          } else if (verdict.reason === 'reload') {
+            setAutoTaskStatus('检测到页面含「重新加载」，暂不获取关键词任务');
+            pushAutoTaskLogLine('检测到页面含「重新加载」，暂不获取关键词任务，15 秒后重试');
+          }
+          sendCountdownToPage(true, '等待网络', 15);
+          scheduleLoop(15000);
+          return;
+        }
+        proceedFetchKeyword();
+      });
+    });
   }
 
   loop();
@@ -1322,6 +1583,8 @@ function bindAutoTaskButtons() {
   if (btnStop) {
     btnStop.onclick = function() {
       autoTaskAbort = true;
+      panelAutoTaskSessionGen++;
+      clearPanelAutoTaskScheduledTimers();
       chrome.runtime.sendMessage({ type: 'stopAutoTask' });
       autoTaskRunning = false;
       chrome.storage.local.set({ autoTaskRunning: false });
@@ -1348,6 +1611,8 @@ window.addEventListener('pagehide', function() {
   var runInBgEl = document.getElementById('autoTaskRunInBackground');
   if (!runInBgEl || !runInBgEl.checked) {
     autoTaskAbort = true;
+    panelAutoTaskSessionGen++;
+    clearPanelAutoTaskScheduledTimers();
     chrome.runtime.sendMessage({ type: 'stopAutoTask' });
     autoTaskRunning = false;
     chrome.storage.local.set({ autoTaskRunning: false, autoTaskStatus: '已关闭' });
@@ -1750,9 +2015,7 @@ function doAutoLogout() {
     var tabId = tab.id;
     var tabUrl = (tab.url || '').toLowerCase();
     var isXhsTab = tabUrl.indexOf('xiaohongshu.com') !== -1 || tabUrl.indexOf('rednote.com') !== -1;
-    var targetUrl = isXhsTab
-      ? (tabUrl.indexOf('rednote.com') !== -1 ? 'https://www.rednote.com' : 'https://www.xiaohongshu.com')
-      : getSearchSiteOrigin();
+    var targetUrl = getAutoLoginPageUrl();
 
     function tryLogout() {
       // Step 1: 点击"≡ 更多"展开菜单
@@ -1964,7 +2227,7 @@ function doAutoSwitchAccount(nextIndex, callback) {
               pushAutoTaskLogLine('开始自动登录账号 ' + (nextIndex + 1) + '：' + phone);
               setAutoTaskStatus('正在登录账号 ' + (nextIndex + 1) + '…');
 
-              chrome.tabs.update(tabId, { url: getSearchSiteOrigin() }, function() {
+              chrome.tabs.update(tabId, { url: getAutoLoginPageUrl() }, function() {
                 waitForTabComplete(tabId).then(function() {
                   setTimeout(function() {
                     chrome.scripting.executeScript({
@@ -2060,8 +2323,13 @@ function doAutoLogin() {
     setAccountStatus('请先填写选中账号的接码链接', 'err');
     return;
   }
+  var maxCollect = acc.maxCollectCount != null ? acc.maxCollectCount : 200;
+  if (maxCollect === 0) {
+    setAccountStatus('当前账号采集上限为 0，无需自动登录', 'ok');
+    return;
+  }
 
-  setAccountStatus('正在导航到小红书…', 'ing');
+  setAccountStatus('正在导航到登录页…', 'ing');
   chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
     var tab = tabs[0];
     if (!tab || !tab.id) {
@@ -2069,11 +2337,7 @@ function doAutoLogin() {
       return;
     }
     var tabId = tab.id;
-    var tabUrl = (tab.url || '').toLowerCase();
-    var isXhsTab = tabUrl.indexOf('xiaohongshu.com') !== -1 || tabUrl.indexOf('rednote.com') !== -1;
-    var loginTargetUrl = isXhsTab
-      ? (tabUrl.indexOf('rednote.com') !== -1 ? 'https://www.rednote.com' : 'https://www.xiaohongshu.com')
-      : getSearchSiteOrigin();
+    var loginTargetUrl = getAutoLoginPageUrl();
 
     chrome.tabs.update(tabId, { url: loginTargetUrl }, function() {
       setAccountStatus('等待页面加载…', 'ing');
@@ -2197,7 +2461,7 @@ chrome.storage.onChanged.addListener(function(changes, areaName) {
   if (changes.autoTaskStatus && changes.autoTaskStatus.newValue != null) {
     var v = changes.autoTaskStatus.newValue;
     if (autoTaskStatusEl) autoTaskStatusEl.textContent = v;
-    if (autoTaskCountdownTextEl) autoTaskCountdownTextEl.textContent = v;
+    mirrorAutoTaskStatusToCountdownLine(v);
   }
   if (changes[KEYWORD_STORAGE_KEY] && Array.isArray(changes[KEYWORD_STORAGE_KEY].newValue)) {
     pluginSearchKeywords = changes[KEYWORD_STORAGE_KEY].newValue;
@@ -2207,6 +2471,15 @@ chrome.storage.onChanged.addListener(function(changes, areaName) {
     searchSiteBaseUrl = normalizeSearchSiteBaseUrl(changes[SEARCH_SITE_BASE_STORAGE_KEY].newValue);
     var sbi = document.getElementById('searchSiteBaseInput');
     if (sbi) sbi.value = searchSiteBaseUrl;
+  }
+  if (changes[AUTO_LOGIN_PAGE_STORAGE_KEY]) {
+    autoLoginPageUrl = normalizeAutoLoginPageUrl(changes[AUTO_LOGIN_PAGE_STORAGE_KEY].newValue);
+    var ali = document.getElementById('autoLoginPageInput');
+    if (ali) ali.value = autoLoginPageUrl;
+  }
+  if (changes[AUTO_TASK_AUTO_LOGIN_ENABLED_KEY]) {
+    var nv = changes[AUTO_TASK_AUTO_LOGIN_ENABLED_KEY].newValue === true;
+    if (autoTaskAutoLoginEnabledEl) autoTaskAutoLoginEnabledEl.checked = nv;
   }
   if (changes.autoTaskLogLine && changes.autoTaskLogLine.newValue) {
     var entry = changes.autoTaskLogLine.newValue;

@@ -1,21 +1,33 @@
-// 点击扩展图标时打开右侧侧边栏
-chrome.action.onClicked.addListener((tab) => {
-  chrome.sidePanel.open({ windowId: tab.windowId });
-});
+// 工具栏图标点击即打开侧边栏（与下方自动打开共用同一行为）
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(function() {});
 
-// 首次安装或升级时，若未配置 apiHost 则从 manifest 写入默认值
-chrome.runtime.onInstalled.addListener(function() {
-  var defaultHost = (chrome.runtime.getManifest().api_host_default || '').trim();
-  if (!defaultHost) return;
-  chrome.storage.local.get(['apiHost'], function(o) {
-    if (!o.apiHost || (o.apiHost || '').trim() === '') {
-      chrome.storage.local.set({ apiHost: defaultHost });
-    }
+/** 在当前聚焦窗口打开侧边栏（无可用标签页时静默失败） */
+function openSidePanelInLastFocusedWindow() {
+  chrome.tabs.query({ active: true, lastFocusedWindow: true }, function(tabs) {
+    var t = tabs && tabs[0];
+    if (!t || t.windowId == null) return;
+    chrome.sidePanel.open({ windowId: t.windowId }).catch(function() {});
   });
+}
+
+// 首次安装或升级时，若未配置 apiHost 则从 manifest 写入默认值；首次安装时自动打开侧边栏
+chrome.runtime.onInstalled.addListener(function(details) {
+  var defaultHost = (chrome.runtime.getManifest().api_host_default || '').trim();
+  if (defaultHost) {
+    chrome.storage.local.get(['apiHost'], function(o) {
+      if (!o.apiHost || (o.apiHost || '').trim() === '') {
+        chrome.storage.local.set({ apiHost: defaultHost });
+      }
+    });
+  }
+  if (details.reason === 'install') {
+    openSidePanelInLastFocusedWindow();
+  }
 });
 
-// 浏览器启动时：若缓存已勾选「后台执行」，则自动启动自动任务
+// 浏览器启动时：自动打开侧边栏；若缓存已勾选「后台执行」，则自动启动自动任务
 chrome.runtime.onStartup.addListener(function() {
+  openSidePanelInLastFocusedWindow();
   chrome.storage.local.get(['autoTaskRunInBackground'], function(o) {
     if (o.autoTaskRunInBackground) {
       backgroundAutoTaskAbort = false;
@@ -30,10 +42,6 @@ chrome.runtime.onStartup.addListener(function() {
 var CALLBACK_TIMEOUT_MS = 60000;
 chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
   if (msg.type === 'startAutoTask') {
-    if (backgroundAutoTaskRunning) {
-      sendResponse({ ok: true });
-      return true;
-    }
     backgroundAutoTaskAbort = false;
     runBackgroundAutoTaskLoop();
     sendResponse({ ok: true });
@@ -41,14 +49,8 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
   }
   if (msg.type === 'stopAutoTask') {
     backgroundAutoTaskAbort = true;
-    if (backgroundAutoTaskCountdownTimerId) {
-      clearInterval(backgroundAutoTaskCountdownTimerId);
-      backgroundAutoTaskCountdownTimerId = null;
-    }
-    if (backgroundAutoTaskWaitTimeoutId) {
-      clearTimeout(backgroundAutoTaskWaitTimeoutId);
-      backgroundAutoTaskWaitTimeoutId = null;
-    }
+    clearBackgroundAutoTaskScheduledTimers();
+    backgroundAutoTaskSessionGen++;
     if (backgroundAutoTaskDoneCallback) {
       backgroundAutoTaskDoneCallback();
     }
@@ -60,6 +62,12 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
   if (msg.type === 'loginDialogDetected') {
     handleLoginDialogDetected(sender);
     return false;
+  }
+  if (msg.type === 'runNavigateThenAutoLogin' && msg.tabId != null) {
+    runNavigateThenAutoLogin(msg.tabId, function(success) {
+      sendResponse({ ok: !!success });
+    });
+    return true;
   }
   if (msg.type !== 'xhsCallbackFetch' || !msg.url || msg.body === undefined) {
     return false;
@@ -91,8 +99,22 @@ var backgroundAutoTaskRunning = false;
 var backgroundAutoTaskWaitTimeoutId = null;
 var backgroundAutoTaskCountdownTimerId = null;
 var backgroundAutoTaskDoneCallback = null;
+/** 每次启动后台自动任务递增，用于使上一轮残留的 setTimeout 回调失效 */
+var backgroundAutoTaskSessionGen = 0;
+
+function clearBackgroundAutoTaskScheduledTimers() {
+  if (backgroundAutoTaskCountdownTimerId) {
+    clearInterval(backgroundAutoTaskCountdownTimerId);
+    backgroundAutoTaskCountdownTimerId = null;
+  }
+  if (backgroundAutoTaskWaitTimeoutId) {
+    clearTimeout(backgroundAutoTaskWaitTimeoutId);
+    backgroundAutoTaskWaitTimeoutId = null;
+  }
+}
 var SEARCH_SITE_BASE_STORAGE_KEY = 'searchSiteBaseUrl';
 var SEARCH_SITE_BASE_DEFAULT = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
+var AUTO_TASK_AUTO_LOGIN_ENABLED_KEY = 'autoTaskAutoLoginEnabled';
 
 function setAutoTaskStatusInStorage(text) {
   chrome.storage.local.set({ autoTaskStatus: text || '' });
@@ -155,6 +177,30 @@ function getSearchSiteOriginFromStorage(callback) {
     } catch (e) {
       callback('https://www.xiaohongshu.com');
     }
+  });
+}
+
+var AUTO_LOGIN_PAGE_DEFAULT = 'https://www.rednote.com';
+var AUTO_LOGIN_PAGE_STORAGE_KEY = 'autoLoginPageUrl';
+
+function normalizeAutoLoginPageUrl(raw) {
+  var d = AUTO_LOGIN_PAGE_DEFAULT;
+  var s = (raw || '').trim();
+  if (!s) return d;
+  s = s.replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(s)) return d;
+  try {
+    var u = new URL(s);
+    if (!/^https?:$/i.test(u.protocol)) return d;
+    return u.href.replace(/\/$/, '') || d;
+  } catch (e) {
+    return d;
+  }
+}
+
+function getAutoLoginPageUrlFromStorage(callback) {
+  chrome.storage.local.get([AUTO_LOGIN_PAGE_STORAGE_KEY], function(o) {
+    callback(normalizeAutoLoginPageUrl(o[AUTO_LOGIN_PAGE_STORAGE_KEY]));
   });
 }
 
@@ -512,6 +558,78 @@ function _checkPageHasLoginDialog() {
   return false;
 }
 
+/**
+ * 注入页面 MAIN：若不应拉取关键词任务则返回 { block: true, reason }，否则 { block: false }
+ * unreachable / reload：网络错误类文案；login：顶部可见「登录」入口
+ */
+function _pageShouldBlockKeywordFetch() {
+  try {
+    var blob = '';
+    if (document.body) blob += document.body.innerText || '';
+    if (document.documentElement) blob += document.documentElement.innerText || '';
+    if (document.title) blob += document.title;
+    if (blob.indexOf('无法访问此网站') !== -1) {
+      return { block: true, reason: 'unreachable' };
+    }
+    if (blob.indexOf('重新加载') !== -1) {
+      return { block: true, reason: 'reload' };
+    }
+  } catch (e) {}
+  function isVisible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    var rect = el.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return false;
+    var st = window.getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) return false;
+    return true;
+  }
+  var byId = document.getElementById('login-btn');
+  if (byId && isVisible(byId)) return { block: true, reason: 'login' };
+  var list = document.querySelectorAll('.login-btn');
+  for (var i = 0; i < list.length; i++) {
+    var el = list[i];
+    if (!isVisible(el)) continue;
+    var t = (el.textContent || '').replace(/\s+/g, '');
+    if (t.indexOf('登录') !== -1) return { block: true, reason: 'login' };
+  }
+  return { block: false };
+}
+
+/** 拉取关键词前：连续 N 次页面校验，间隔 ms（与 panel 一致） */
+var KEYWORD_FETCH_PAGE_CHECK_ROUNDS = 5;
+var KEYWORD_FETCH_PAGE_CHECK_INTERVAL_MS = 500;
+function runKeywordFetchPageChecks(tabId, isStale, cb) {
+  var passed = 0;
+  function step() {
+    if (isStale()) return;
+    chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      world: 'MAIN',
+      func: _pageShouldBlockKeywordFetch,
+      args: []
+    }, function(results) {
+      if (isStale()) return;
+      if (chrome.runtime.lastError) {
+        pushAutoTaskLogLine('无法检测页面状态（' + (chrome.runtime.lastError.message || '') + '），继续请求关键词任务');
+        cb(false);
+        return;
+      }
+      var verdict = results && results[0] && results[0].result;
+      if (verdict && verdict.block) {
+        cb(verdict);
+        return;
+      }
+      passed++;
+      if (passed >= KEYWORD_FETCH_PAGE_CHECK_ROUNDS) {
+        cb(null);
+        return;
+      }
+      setTimeout(step, KEYWORD_FETCH_PAGE_CHECK_INTERVAL_MS);
+    });
+  }
+  step();
+}
+
 function _stopAutoTaskForLogin() {
   _wasAutoTaskRunning = true;
   backgroundAutoTaskAbort = true;
@@ -558,6 +676,11 @@ function _doAutoLoginOnTab(tabId, acc, accIdx, onDone) {
         var maxPoll = 40;
         var pollCount = 0;
         function pollSmsCode() {
+          if (backgroundAutoTaskAbort) {
+            pushAutoTaskLogLine('自动登录：已中止');
+            onDone(false);
+            return;
+          }
           if (pollCount >= maxPoll) {
             pushAutoTaskLogLine('自动登录：接码超时');
             onDone(false);
@@ -598,13 +721,106 @@ function _doAutoLoginOnTab(tabId, acc, accIdx, onDone) {
   });
 }
 
+/**
+ * 与侧栏「自动登录」一致：打开「自动登录打开页」→ 等待加载 → 5 秒后再填手机号/接码/登录
+ */
+function runNavigateThenAutoLogin(tabId, onDone, expectedTaskSessionGen) {
+  function loginChainStale() {
+    return expectedTaskSessionGen != null && expectedTaskSessionGen !== backgroundAutoTaskSessionGen;
+  }
+  chrome.storage.local.get(['accountList', 'selectedAccountIndex'], function(o) {
+    if (loginChainStale()) {
+      if (onDone) onDone(false);
+      return;
+    }
+    if (backgroundAutoTaskAbort) {
+      if (onDone) onDone(false);
+      return;
+    }
+    var accs = (o.accountList || []).map(function(item) {
+      return {
+        phone: (item.phone || '').trim(),
+        codeUrl: (item.codeUrl || '').trim(),
+        maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 200
+      };
+    });
+    var accIdx = parseInt(o.selectedAccountIndex, 10) || 0;
+    if (accIdx < 0 || accIdx >= accs.length) {
+      pushAutoTaskLogLine('请求关键词前自动登录：无有效选中账号');
+      if (onDone) onDone(false);
+      return;
+    }
+    var acc = accs[accIdx];
+    if (!acc.phone || !acc.codeUrl) {
+      pushAutoTaskLogLine('请求关键词前自动登录：账号 ' + (accIdx + 1) + ' 缺少手机号或接码链接');
+      if (onDone) onDone(false);
+      return;
+    }
+    var maxC = acc.maxCollectCount != null ? acc.maxCollectCount : 200;
+    if (maxC === 0) {
+      pushAutoTaskLogLine('请求关键词前自动登录：账号 ' + (accIdx + 1) + ' 采集上限为 0，跳过登录');
+      if (onDone) onDone(false);
+      return;
+    }
+    setAutoTaskStatusInStorage('正在打开登录页并自动登录…');
+    pushAutoTaskLogLine('正在打开「自动登录打开页」并登录（与侧栏「自动登录」相同流程）…');
+    getAutoLoginPageUrlFromStorage(function(loginUrl) {
+      if (loginChainStale()) {
+        if (onDone) onDone(false);
+        return;
+      }
+      if (backgroundAutoTaskAbort) {
+        if (onDone) onDone(false);
+        return;
+      }
+      chrome.tabs.update(tabId, { url: loginUrl }, function() {
+        if (loginChainStale()) {
+          if (onDone) onDone(false);
+          return;
+        }
+        if (chrome.runtime.lastError) {
+          pushAutoTaskLogLine('打开登录页失败：' + chrome.runtime.lastError.message);
+          if (onDone) onDone(false);
+          return;
+        }
+        waitForTabComplete(tabId).then(function() {
+          if (loginChainStale()) {
+            if (onDone) onDone(false);
+            return;
+          }
+          if (backgroundAutoTaskAbort) {
+            if (onDone) onDone(false);
+            return;
+          }
+          setTimeout(function() {
+            if (loginChainStale()) {
+              if (onDone) onDone(false);
+              return;
+            }
+            if (backgroundAutoTaskAbort) {
+              if (onDone) onDone(false);
+              return;
+            }
+            _doAutoLoginOnTab(tabId, acc, accIdx, onDone);
+          }, 5000);
+        });
+      });
+    });
+  });
+}
+
 function handleLoginDialogDetected(sender) {
   if (_autoLoginInProgress) return;
   var tabId = sender && sender.tab && sender.tab.id;
   if (!tabId) return;
 
-  chrome.storage.local.get(['accountList', 'selectedAccountIndex', 'autoLoginOnDialog', 'autoTaskRunning'], function(o) {
+  chrome.storage.local.get(['accountList', 'selectedAccountIndex', 'autoLoginOnDialog', 'autoTaskRunning', AUTO_TASK_AUTO_LOGIN_ENABLED_KEY], function(o) {
     if (o.autoLoginOnDialog === false) return;
+    var autoTaskActive = !!(o.autoTaskRunning || backgroundAutoTaskRunning);
+    if (autoTaskActive && o[AUTO_TASK_AUTO_LOGIN_ENABLED_KEY] !== true) {
+      pushAutoTaskLogLine('检测到登录弹窗，未勾选「需要时自动登录」，不执行自动登录（请手动登录后再继续）');
+      return;
+    }
     var accs = (o.accountList || []).map(function(item) {
       return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim(), maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 200 };
     });
@@ -613,6 +829,11 @@ function handleLoginDialogDetected(sender) {
     var acc = accs[accIdx];
     if (!acc.phone || !acc.codeUrl) {
       pushAutoTaskLogLine('检测到登录弹窗，但账号 ' + (accIdx + 1) + ' 缺少手机号或接码链接');
+      return;
+    }
+    var maxCollectDlg = acc.maxCollectCount != null ? acc.maxCollectCount : 200;
+    if (maxCollectDlg === 0) {
+      pushAutoTaskLogLine('检测到登录弹窗，但账号 ' + (accIdx + 1) + ' 采集上限为 0，跳过自动登录');
       return;
     }
 
@@ -639,42 +860,51 @@ function handleLoginDialogDetected(sender) {
               return;
             }
 
-            pushAutoTaskLogLine('刷新后仍需登录，执行自动登录账号 ' + (accIdx + 1));
-            _doAutoLoginOnTab(tabId, acc, accIdx, function(success) {
-              _autoLoginInProgress = false;
-              if (success) {
-                pushAutoTaskLogLine('登录成功，自动启动采集任务');
-                if (!backgroundAutoTaskRunning) {
-                  backgroundAutoTaskAbort = false;
-                  runBackgroundAutoTaskLoop();
-                }
-              } else {
-                pushAutoTaskLogLine('自动登录未完成，刷新页面检查登录状态…');
-                chrome.tabs.reload(tabId, {}, function() {
-                  waitForTabComplete(tabId).then(function() {
-                    setTimeout(function() {
-                      chrome.scripting.executeScript({
-                        target: { tabId: tabId }, world: 'MAIN', func: _checkPageHasLoginDialog, args: []
-                      }, function(r2) {
-                        var needLogin2 = r2 && r2[0] && r2[0].result;
-                        if (!needLogin2) {
-                          pushAutoTaskLogLine('刷新后确认已登录，自动启动采集任务');
-                          if (!backgroundAutoTaskRunning) {
-                            backgroundAutoTaskAbort = false;
-                            runBackgroundAutoTaskLoop();
-                          }
-                        } else {
-                          pushAutoTaskLogLine('仍未登录，等待下次登录弹窗检测');
-                          if (taskWasRunning) {
-                            pushAutoTaskLogLine('15秒后重试自动登录');
-                            setTimeout(function() { _restartAutoTask(); }, 15000);
-                          }
+            pushAutoTaskLogLine('刷新后仍需登录，跳转到配置页并执行自动登录账号 ' + (accIdx + 1));
+            chrome.storage.local.get([AUTO_LOGIN_PAGE_STORAGE_KEY], function(so) {
+              var loginPageUrl = normalizeAutoLoginPageUrl(so[AUTO_LOGIN_PAGE_STORAGE_KEY]);
+              chrome.tabs.update(tabId, { url: loginPageUrl }, function() {
+                waitForTabComplete(tabId).then(function() {
+                  setTimeout(function() {
+                    _doAutoLoginOnTab(tabId, acc, accIdx, function(success) {
+                      _autoLoginInProgress = false;
+                      if (success) {
+                        pushAutoTaskLogLine('登录成功，自动启动采集任务');
+                        if (!backgroundAutoTaskRunning) {
+                          backgroundAutoTaskAbort = false;
+                          runBackgroundAutoTaskLoop();
                         }
-                      });
-                    }, 3000);
-                  });
+                      } else {
+                        pushAutoTaskLogLine('自动登录未完成，刷新页面检查登录状态…');
+                        chrome.tabs.reload(tabId, {}, function() {
+                          waitForTabComplete(tabId).then(function() {
+                            setTimeout(function() {
+                              chrome.scripting.executeScript({
+                                target: { tabId: tabId }, world: 'MAIN', func: _checkPageHasLoginDialog, args: []
+                              }, function(r2) {
+                                var needLogin2 = r2 && r2[0] && r2[0].result;
+                                if (!needLogin2) {
+                                  pushAutoTaskLogLine('刷新后确认已登录，自动启动采集任务');
+                                  if (!backgroundAutoTaskRunning) {
+                                    backgroundAutoTaskAbort = false;
+                                    runBackgroundAutoTaskLoop();
+                                  }
+                                } else {
+                                  pushAutoTaskLogLine('仍未登录，等待下次登录弹窗检测');
+                                  if (taskWasRunning) {
+                                    pushAutoTaskLogLine('15秒后重试自动登录');
+                                    setTimeout(function() { _restartAutoTask(); }, 15000);
+                                  }
+                                }
+                              });
+                            }, 3000);
+                          });
+                        });
+                      }
+                    });
+                  }, 3000);
                 });
-              }
+              });
             });
           });
         }, 3000);
@@ -925,8 +1155,8 @@ function doBackgroundAutoSwitchAccount(tabId, nextIndex, accountList, callback) 
             pushAutoTaskLogLine('开始自动登录账号 ' + (nextIndex + 1) + '：' + phone);
             setAutoTaskStatusInStorage('正在登录账号 ' + (nextIndex + 1) + '…');
 
-            getSearchSiteOriginFromStorage(function(loginOrigin) {
-            chrome.tabs.update(tabId, { url: loginOrigin }, function() {
+            getAutoLoginPageUrlFromStorage(function(loginPageUrl) {
+            chrome.tabs.update(tabId, { url: loginPageUrl }, function() {
               waitForTabComplete(tabId).then(function() {
                 setTimeout(function() {
                   chrome.scripting.executeScript({
@@ -1037,6 +1267,23 @@ function ensureContentScriptReady(tabId) {
 }
 
 function runBackgroundAutoTaskLoop() {
+  clearBackgroundAutoTaskScheduledTimers();
+  backgroundAutoTaskSessionGen++;
+  var bgTaskSession = backgroundAutoTaskSessionGen;
+  function bgStale() {
+    return bgTaskSession !== backgroundAutoTaskSessionGen;
+  }
+  /** 延续 loop 的延时任务，新一次启动后旧定时器不再执行 */
+  function scheduleLoop(ms) {
+    return setTimeout(function() {
+      if (bgStale()) return;
+      if (backgroundAutoTaskAbort) {
+        done();
+        return;
+      }
+      loop();
+    }, ms);
+  }
   backgroundAutoTaskRunning = true;
   function done() {
     backgroundAutoTaskDoneCallback = null;
@@ -1060,6 +1307,7 @@ function runBackgroundAutoTaskLoop() {
 
   function checkAndSwitchIfNeeded(thenContinue) {
     chrome.storage.local.get(['accountList', 'selectedAccountIndex', 'accountCollectStats'], function(o) {
+      if (bgStale()) return;
       var accs = (o.accountList || []).map(function(item) {
         return { phone: (item.phone || '').trim(), codeUrl: (item.codeUrl || '').trim(), maxCollectCount: item.maxCollectCount != null ? parseInt(item.maxCollectCount, 10) : 200 };
       });
@@ -1084,7 +1332,11 @@ function runBackgroundAutoTaskLoop() {
         setAutoTaskStatusInStorage(statusMsg);
         pushAutoTaskLogLine(statusMsg);
         sendCountdownToPage(true, '等待重新检测', waitSec);
-        setTimeout(function() { checkAndSwitchIfNeeded(thenContinue); }, waitSec * 1000);
+        setTimeout(function() {
+          if (bgStale()) return;
+          if (backgroundAutoTaskAbort) { done(); return; }
+          checkAndSwitchIfNeeded(thenContinue);
+        }, waitSec * 1000);
         return;
       }
 
@@ -1098,23 +1350,33 @@ function runBackgroundAutoTaskLoop() {
         setAutoTaskStatusInStorage(statusMsg2);
         pushAutoTaskLogLine(statusMsg2);
         sendCountdownToPage(true, '等待重新检测', waitSec2);
-        setTimeout(function() { checkAndSwitchIfNeeded(thenContinue); }, waitSec2 * 1000);
+        setTimeout(function() {
+          if (bgStale()) return;
+          if (backgroundAutoTaskAbort) { done(); return; }
+          checkAndSwitchIfNeeded(thenContinue);
+        }, waitSec2 * 1000);
         return;
       }
 
       pushAutoTaskLogLine('准备切换到账号 ' + (nextIdx + 1));
       getTab().then(function(tab) {
+        if (bgStale()) return;
         if (!tab || !tab.id) {
           pushAutoTaskLogLine('无法获取标签页，无法切换账号');
           done();
           return;
         }
         doBackgroundAutoSwitchAccount(tab.id, nextIdx, accs, function(success) {
+          if (bgStale()) return;
           if (success) {
             thenContinue();
           } else {
             pushAutoTaskLogLine('账号切换/登录失败，15秒后重试');
-            setTimeout(function() { checkAndSwitchIfNeeded(thenContinue); }, 15000);
+            setTimeout(function() {
+              if (bgStale()) return;
+              if (backgroundAutoTaskAbort) { done(); return; }
+              checkAndSwitchIfNeeded(thenContinue);
+            }, 15000);
           }
         });
       });
@@ -1122,6 +1384,7 @@ function runBackgroundAutoTaskLoop() {
   }
 
   function loop() {
+    if (bgStale()) return;
     if (backgroundAutoTaskAbort) {
       done();
       return;
@@ -1130,13 +1393,22 @@ function runBackgroundAutoTaskLoop() {
   }
 
   function loopInner() {
+    if (bgStale()) return;
     if (backgroundAutoTaskAbort) { done(); return; }
     chrome.storage.local.remove(['searchNotesPages', 'searchNotesResult']);
-    setAutoTaskStatusInStorage('正在获取任务…');
-    pushAutoTaskLogLine('正在获取任务…');
-    sendCountdownToPage(true, '请求关键词…', 0);
-    fetchKeywordTaskInBackground()
+
+    getTab().then(function(tab) {
+      if (bgStale()) return;
+      if (backgroundAutoTaskAbort) { done(); return; }
+
+      function proceedFetchKeyword() {
+        if (bgStale()) return;
+        setAutoTaskStatusInStorage('正在获取任务…');
+        pushAutoTaskLogLine('正在获取任务…');
+        sendCountdownToPage(true, '请求关键词…', 0);
+        fetchKeywordTaskInBackground()
       .then(function(result) {
+        if (bgStale()) return;
         if (backgroundAutoTaskAbort) { done(); return; }
         var keywords = result.keywords || [];
         var taskInfos = result.taskInfos || [];
@@ -1144,23 +1416,26 @@ function runBackgroundAutoTaskLoop() {
           setAutoTaskStatusInStorage('暂无任务，15 秒后重试');
           pushAutoTaskLogLine('暂无任务，15 秒后重试');
           sendCountdownToPage(true, '请求关键词', 15);
-          setTimeout(loop, 15000);
+          scheduleLoop(15000);
           return;
         }
         getTab().then(function(tab) {
+          if (bgStale()) return;
           if (!tab || !tab.id) {
             setAutoTaskStatusInStorage('无法获取当前标签页');
             pushAutoTaskLogLine('无法获取当前标签页');
             sendCountdownToPage(true, '请求关键词', 5);
-            setTimeout(loop, 5000);
+            scheduleLoop(5000);
             return;
           }
           var total = keywords.length;
           var index = 0;
 
           function doNext() {
+            if (bgStale()) return;
             if (backgroundAutoTaskAbort) { done(); return; }
             if (index >= total) {
+              if (bgStale()) return;
               loop();
               return;
             }
@@ -1191,19 +1466,23 @@ function runBackgroundAutoTaskLoop() {
                     stats[accKey][today] = maxC;
                     chrome.storage.local.set({ accountCollectStats: stats });
                     pushAutoTaskLogLine('打开搜索页失败：' + chrome.runtime.lastError.message + '，已标记今日暂停采集');
+                    if (bgStale()) return;
                     loop();
                   });
                   return;
                 }
                 waitForTabComplete(tab.id).then(function() {
+                  if (bgStale()) return;
                   if (backgroundAutoTaskAbort) { done(); return; }
                   setTimeout(function() {
+                    if (bgStale()) return;
                     if (backgroundAutoTaskAbort) { done(); return; }
                     chrome.storage.local.get(['publishTimeFilter'], function(o) {
                       var filterVal = (o.publishTimeFilter || '').trim();
                       var thenWait = function() {
                         index++;
                         getRandomIntervalMsFromStorage().then(function(ms) {
+                          if (bgStale()) return;
                           if (backgroundAutoTaskAbort) { done(); return; }
                           var sec = Math.ceil(ms / 1000);
                           var waitText = '等待下一词 · ' + sec + ' 秒';
@@ -1212,6 +1491,11 @@ function runBackgroundAutoTaskLoop() {
                           sendCountdownToPage(true, '请求关键词', sec);
                           var remainSec = sec;
                           backgroundAutoTaskCountdownTimerId = setInterval(function() {
+                            if (bgStale()) {
+                              if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
+                              backgroundAutoTaskCountdownTimerId = null;
+                              return;
+                            }
                             if (backgroundAutoTaskAbort) {
                               if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
                               backgroundAutoTaskCountdownTimerId = null;
@@ -1228,6 +1512,7 @@ function runBackgroundAutoTaskLoop() {
                           }, 1000);
                           backgroundAutoTaskWaitTimeoutId = setTimeout(function() {
                             backgroundAutoTaskWaitTimeoutId = null;
+                            if (bgStale()) return;
                             if (backgroundAutoTaskCountdownTimerId) {
                               clearInterval(backgroundAutoTaskCountdownTimerId);
                               backgroundAutoTaskCountdownTimerId = null;
@@ -1260,6 +1545,7 @@ function runBackgroundAutoTaskLoop() {
         });
       })
       .catch(function(err) {
+        if (bgStale()) return;
         if (backgroundAutoTaskAbort) { done(); return; }
         var msg = (err && err.message) ? err.message : String(err);
         if (msg === 'Failed to fetch') msg = '网络请求失败（请检查接口地址与网络）';
@@ -1267,8 +1553,88 @@ function runBackgroundAutoTaskLoop() {
         setAutoTaskStatusInStorage(errText);
         pushAutoTaskLogLine(errText);
         sendCountdownToPage(true, '请求关键词', 15);
-        setTimeout(loop, 15000);
+        scheduleLoop(15000);
       });
+      }
+
+      if (!tab || !tab.id) {
+        proceedFetchKeyword();
+        return;
+      }
+      var tabUrl = tab.url || '';
+      if (/^chrome-error:\/\//i.test(tabUrl)) {
+        setAutoTaskStatusInStorage('当前为浏览器网络错误页，暂不获取关键词任务');
+        pushAutoTaskLogLine('当前标签页为网络错误页（chrome-error），暂不获取关键词任务，15 秒后重试');
+        sendCountdownToPage(true, '等待网络', 15);
+        scheduleLoop(15000);
+        return;
+      }
+      if (!isXhsLikeHost(tab.url)) {
+        proceedFetchKeyword();
+        return;
+      }
+      runKeywordFetchPageChecks(tab.id, function() {
+        return bgStale() || backgroundAutoTaskAbort;
+      }, function(verdict) {
+        if (bgStale()) return;
+        if (backgroundAutoTaskAbort) { done(); return; }
+        if (verdict === false) {
+          proceedFetchKeyword();
+          return;
+        }
+        if (verdict && verdict.block) {
+          if (verdict.reason === 'login') {
+            chrome.storage.local.get([AUTO_TASK_AUTO_LOGIN_ENABLED_KEY], function(so) {
+              if (bgStale()) return;
+              if (backgroundAutoTaskAbort) {
+                done();
+                return;
+              }
+              if (so[AUTO_TASK_AUTO_LOGIN_ENABLED_KEY] !== true) {
+                setAutoTaskStatusInStorage('检测到未登录，未勾选「需要时自动登录」，请手动登录后重试');
+                pushAutoTaskLogLine('检测到未登录，未勾选「需要时自动登录」，暂不获取关键词任务，15 秒后重试');
+                sendCountdownToPage(true, '等待登录', 15);
+                scheduleLoop(15000);
+                return;
+              }
+              setAutoTaskStatusInStorage('检测到未登录，正在自动登录（与侧栏「自动登录」相同）…');
+              pushAutoTaskLogLine('检测到未登录，开始自动登录后再获取关键词任务…');
+              runNavigateThenAutoLogin(
+                tab.id,
+                function(success) {
+                  if (bgStale()) return;
+                  if (backgroundAutoTaskAbort) {
+                    done();
+                    return;
+                  }
+                  if (success) {
+                    pushAutoTaskLogLine('自动登录成功，继续获取关键词任务');
+                    proceedFetchKeyword();
+                  } else {
+                    pushAutoTaskLogLine('自动登录未完成，15 秒后重试');
+                    sendCountdownToPage(true, '等待登录', 15);
+                    scheduleLoop(15000);
+                  }
+                },
+                bgTaskSession
+              );
+            });
+            return;
+          }
+          if (verdict.reason === 'unreachable') {
+            setAutoTaskStatusInStorage('检测到页面「无法访问此网站」，暂不获取关键词任务');
+            pushAutoTaskLogLine('检测到页面「无法访问此网站」，暂不获取关键词任务，15 秒后重试');
+          } else if (verdict.reason === 'reload') {
+            setAutoTaskStatusInStorage('检测到页面含「重新加载」，暂不获取关键词任务');
+            pushAutoTaskLogLine('检测到页面含「重新加载」，暂不获取关键词任务，15 秒后重试');
+          }
+          sendCountdownToPage(true, '等待网络', 15);
+          scheduleLoop(15000);
+          return;
+        }
+        proceedFetchKeyword();
+      });
+    });
   }
 
   loop();

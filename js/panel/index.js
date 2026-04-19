@@ -1137,10 +1137,14 @@ function updateAutoTaskButtons() {
 }
 
 /**
- * 注入页面 MAIN：与 background 一致；含「无法访问此网站」「重新加载」或可见「登录」则 block
+ * 注入页面 MAIN：与 background 一致；标题为「安全验证」、含「无法访问此网站」「重新加载」或可见「登录」则 block
  */
 function _pageShouldBlockKeywordFetch() {
   try {
+    var pageTitle = (document.title || '').trim();
+    if (pageTitle === '安全验证') {
+      return { block: true, reason: 'security_verify' };
+    }
     var blob = '';
     if (document.body) blob += document.body.innerText || '';
     if (document.documentElement) blob += document.documentElement.innerText || '';
@@ -1532,8 +1536,11 @@ function runAutoTaskLoop() {
           } else if (verdict.reason === 'reload') {
             setAutoTaskStatus('检测到页面含「重新加载」，暂不获取关键词任务');
             pushAutoTaskLogLine('检测到页面含「重新加载」，暂不获取关键词任务，15 秒后重试');
+          } else if (verdict.reason === 'security_verify') {
+            setAutoTaskStatus('当前页面标题为「安全验证」，暂不获取关键词任务');
+            pushAutoTaskLogLine('当前页面标题为「安全验证」，暂不获取关键词任务，15 秒后重试');
           }
-          sendCountdownToPage(true, '等待网络', 15);
+          sendCountdownToPage(true, verdict.reason === 'security_verify' ? '等待验证' : '等待网络', 15);
           scheduleLoop(15000);
           return;
         }

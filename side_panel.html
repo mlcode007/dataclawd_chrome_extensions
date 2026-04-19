@@ -417,6 +417,11 @@
         <input type="text" id="searchSiteBaseInput" placeholder="https://www.xiaohongshu.com/search_result?source=web_search_result_notes" />
         <button type="button" class="btn-secondary" id="btnSaveSearchSiteBase">保存</button>
       </div>
+      <label>自动登录打开页（点击「自动登录」或弹窗触发登录时先跳转到此地址）</label>
+      <div class="keyword-add-row">
+        <input type="text" id="autoLoginPageInput" placeholder="https://www.rednote.com" />
+        <button type="button" class="btn-secondary" id="btnSaveAutoLoginPage">保存</button>
+      </div>
       <label>登录账号（自动登录时使用下方选中的账号）</label>
       <div id="accountListContainer" class="account-list"></div>
       <div class="account-add-wrap">
@@ -477,6 +482,12 @@
           <label class="checkbox-label">
             <input type="checkbox" id="autoTaskRunInBackground" />
             后台执行（关闭侧边栏后继续运行）
+          </label>
+        </div>
+        <div class="interval-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="autoTaskAutoLoginEnabled" />
+            需要时自动登录（检测到未登录则先登录）
           </label>
         </div>
         <div class="keyword-execute-row auto-task-buttons">

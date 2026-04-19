@@ -1137,12 +1137,19 @@ function updateAutoTaskButtons() {
 }
 
 /**
- * 注入页面 MAIN：与 background 一致；标题为「安全验证」、含「无法访问此网站」「重新加载」或可见「登录」则 block
+ * 注入页面 MAIN：与 background 一致；安全验证/验证码 URL、标题含「安全验证」、含「无法访问此网站」「重新加载」或可见「登录」则 block
  */
 function _pageShouldBlockKeywordFetch() {
   try {
+    var href = '';
+    try {
+      href = (typeof location !== 'undefined' && location.href) ? String(location.href) : '';
+    } catch (e0) {}
+    if (/captcha|website-login/i.test(href)) {
+      return { block: true, reason: 'security_verify' };
+    }
     var pageTitle = (document.title || '').trim();
-    if (pageTitle === '安全验证') {
+    if (pageTitle.indexOf('安全验证') !== -1) {
       return { block: true, reason: 'security_verify' };
     }
     var blob = '';
@@ -1485,6 +1492,13 @@ function runAutoTaskLoop() {
         scheduleLoop(15000);
         return;
       }
+      if (/captcha|website-login/i.test(tabUrlPanel)) {
+        setAutoTaskStatus('当前标签页为安全验证/验证码页（URL），暂不获取关键词任务');
+        pushAutoTaskLogLine('当前标签页 URL 含 captcha/website-login，暂不获取关键词任务，15 秒后重试');
+        sendCountdownToPage(true, '等待验证', 15);
+        scheduleLoop(15000);
+        return;
+      }
       if (!isXhsLikeHost(tab.url)) {
         proceedFetchKeyword();
         return;
@@ -1537,8 +1551,8 @@ function runAutoTaskLoop() {
             setAutoTaskStatus('检测到页面含「重新加载」，暂不获取关键词任务');
             pushAutoTaskLogLine('检测到页面含「重新加载」，暂不获取关键词任务，15 秒后重试');
           } else if (verdict.reason === 'security_verify') {
-            setAutoTaskStatus('当前页面标题为「安全验证」，暂不获取关键词任务');
-            pushAutoTaskLogLine('当前页面标题为「安全验证」，暂不获取关键词任务，15 秒后重试');
+            setAutoTaskStatus('当前为安全验证/验证码页，暂不获取关键词任务');
+            pushAutoTaskLogLine('当前为安全验证或验证码页（标题/URL），暂不获取关键词任务，15 秒后重试');
           }
           sendCountdownToPage(true, verdict.reason === 'security_verify' ? '等待验证' : '等待网络', 15);
           scheduleLoop(15000);

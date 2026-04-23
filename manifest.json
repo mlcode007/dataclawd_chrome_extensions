@@ -12,7 +12,7 @@
   "content_scripts": [
     {
       "matches": ["https://www.xiaohongshu.com/*", "https://www.rednote.com/*"],
-      "js": ["js/script/xhs-human-search.js", "js/content/main.js"],
+      "js": ["js/content/xhs-human-search.js", "js/content/main.js"],
       "run_at": "document_start",
       "world": "MAIN"
     },

@@ -283,7 +283,7 @@ function searchByInputInPage(keyword) {
   return true;
 }
 
-/** 注入到页面 MAIN：调用 content script 已注册的 humanSearch（见 js/script/xhs-human-search.js） */
+/** 注入到页面 MAIN：调用 content script 已注册的 humanSearch（见 js/content/xhs-human-search.js） */
 function _runHumanSearchOnXhsPage(keyword) {
   if (typeof humanSearch !== 'function') return Promise.resolve(false);
   return humanSearch(keyword);

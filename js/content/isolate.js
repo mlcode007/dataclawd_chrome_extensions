@@ -125,7 +125,13 @@ function sendXhsSearchResult(body) {
         host = (m && m.api_host_default ? m.api_host_default : '').trim();
       }
       if (!/\/$/.test(host)) host += '/';
-      var url = host + ADD_SEARCH_RESULT_PATH + '?trace_id=' + encodeURIComponent(getTraceId());
+      var url =
+        host +
+        ADD_SEARCH_RESULT_PATH +
+        '?trace_id=' +
+        encodeURIComponent(getTraceId()) +
+        '&source=' +
+        encodeURIComponent('pc_plugin');
       var attempt = 1;
       var maxAttempts = 1 + CALLBACK_MAX_RETRIES;
       function tryOnce() {
@@ -192,11 +198,30 @@ window.addEventListener('message', function(event) {
     // 每次拦截后回传数据：用当前关键词任务 + 本页原始 items（与 data_back.txt 格式一致）调用回传接口
     // interceptedKeyword 从拦截请求 body 中提取，确保回传的关键词与实际搜索一致
     var interceptedKeyword = event.data.interceptedKeyword || '';
-    chrome.storage.local.get('currentKeywordTask', function(res) {
-      var kwInfo = res.currentKeywordTask;
-      if (!kwInfo || typeof kwInfo !== 'object') return;
-      var items = obj.data.items;
-      if (!items || !items.length) return;
+    var items = obj.data.items;
+    if (!items || !items.length) return;
+
+    function getKeywordTaskThenSend(attempt) {
+      chrome.storage.local.get('currentKeywordTask', function(res) {
+        var kwInfo = res.currentKeywordTask;
+        if (!kwInfo || typeof kwInfo !== 'object') {
+          if (attempt < 20) {
+            setTimeout(function() { getKeywordTaskThenSend(attempt + 1); }, 100);
+            return;
+          }
+          if (interceptedKeyword) {
+            console.warn('[DataCrawler] currentKeywordTask 未就绪，使用拦截关键词兜底回传');
+            doSendWithKwInfo({ Keywords: interceptedKeyword });
+            return;
+          }
+          console.warn('[DataCrawler] 回传跳过：currentKeywordTask 与拦截关键词均不可用（已重试）');
+          return;
+        }
+        doSendWithKwInfo(kwInfo);
+      });
+    }
+
+    function doSendWithKwInfo(kwInfo) {
       var body = {};
       var k;
       for (k in kwInfo) if (kwInfo.hasOwnProperty(k)) body[k] = kwInfo[k];
@@ -253,7 +278,9 @@ window.addEventListener('message', function(event) {
           console.error('[DataCrawler] 搜索数据回传失败', err);
           chrome.storage.local.set({ autoTaskCallbackStatus: { success: false, message: msg, time: Date.now() } });
         });
-    });
+    }
+
+    getKeywordTaskThenSend(0);
     return;
   }
 

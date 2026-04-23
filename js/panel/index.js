@@ -124,12 +124,45 @@ function getAutoLoginPageUrl() {
   return normalizeAutoLoginPageUrl(autoLoginPageUrl);
 }
 
-/** 构造带关键词的搜索页 URL（优先走地址栏，避免 React 受控输入框注入成 undefined） */
-function buildSearchResultUrl(keyword) {
+/** 搜索业务落地页：URL 不含 keyword，关键词由 humanSearch 提交（侧栏「搜索页地址」） */
+function buildSearchLandingUrl() {
   var base = getSearchBaseUrl();
-  var kw = keyword == null ? '' : String(keyword).trim();
-  if (!kw) return base;
-  return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'keyword=' + encodeURIComponent(kw);
+  try {
+    var u = new URL(base);
+    u.searchParams.delete('keyword');
+    return u.href;
+  } catch (e) {
+    return base;
+  }
+}
+
+/** 域外进入时的固定 PC 搜索落地页（拦包/回传依赖 search_result 路径） */
+var XHS_PC_SEARCH_LANDING = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
+
+/**
+ * needTabLoad：是否先整页打开搜索落地页再 humanSearch。
+ * 已在 xiaohongshu.com 且 URL 含 search_result：不整页打开，避免重复打开搜索页；站外或非搜索页必须先进入搜索页。
+ * 回传依赖 isolate 对 currentKeywordTask 的重试 + 本页 fetch 拦包（不整页时由 humanSearch 触发新请求）。
+ */
+function getSearchNavigatePlan(tabUrl) {
+  var u = (tabUrl || '').toLowerCase();
+  if (u.indexOf('xiaohongshu.com') === -1) {
+    return { needTabLoad: true, url: XHS_PC_SEARCH_LANDING };
+  }
+  if (u.indexOf('search_result') === -1) {
+    return { needTabLoad: true, url: buildSearchLandingUrl() };
+  }
+  return { needTabLoad: false, url: '' };
+}
+
+function whenReadyForHumanSearch(tab, needTabLoad, delayMs, fn) {
+  if (needTabLoad) {
+    waitForTabComplete(tab.id).then(function() {
+      setTimeout(fn, delayMs);
+    });
+  } else {
+    setTimeout(fn, delayMs);
+  }
 }
 
 /** 从关键词列与任务对象中解析出非空搜索词 */
@@ -628,6 +661,12 @@ function searchByInputInPage(keyword) {
   return true;
 }
 
+/** 注入到页面 MAIN：调用 manifest 注入的 humanSearch（js/script/xhs-human-search.js） */
+function _runHumanSearchOnXhsPage(keyword) {
+  if (typeof humanSearch !== 'function') return Promise.resolve(false);
+  return humanSearch(keyword);
+}
+
 /** 在页面内检测「发布时间」筛选区域是否已出现（用于判断搜索结果是否加载完成）。注入到页面执行。 */
 function isPublishTimeFilterVisible() {
   try {
@@ -714,30 +753,51 @@ function runExecuteSearch() {
       }
       var statusPrefix = '执行中 ' + (index + 1) + '/' + pluginSearchKeywords.length + '：' + keyword;
       setExecuteStatus(statusPrefix);
-      var url = buildSearchResultUrl(keyword);
-      chrome.tabs.update(tab.id, { url: url }, function() {
-        if (chrome.runtime.lastError) {
-          setExecuteStatus('无法打开搜索页：' + chrome.runtime.lastError.message);
+      function runInjectAndFollow() {
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: 'MAIN',
+          func: _runHumanSearchOnXhsPage,
+          args: [keyword]
+        }, function(execRes) {
+          if (chrome.runtime.lastError) {
+            setExecuteStatus(statusPrefix + ' · 拟人搜索异常：' + chrome.runtime.lastError.message);
+          } else if (!execRes || !execRes[0] || execRes[0].result !== true) {
+            setExecuteStatus(statusPrefix + ' · 拟人搜索失败：请确认已在搜索页且顶部搜索框可见');
+          }
+          refreshSearchResultTable();
+          var filterVal = publishTimeFilterEl ? (publishTimeFilterEl.value || '').trim() : '';
+          var thenWait = function() {
+            waitWithCountdown(EXECUTE_WAIT_MS, statusPrefix).then(function() { doNext(index + 1); });
+          };
+          if (filterVal) {
+            setExecuteStatus(statusPrefix + ' · 应用筛选「' + filterVal + '」');
+            applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
+              setTimeout(refreshSearchResultTable, 3000);
+              thenWait();
+            });
+          } else {
+            thenWait();
+          }
+        });
+      }
+      chrome.tabs.get(tab.id, function(fresh) {
+        if (chrome.runtime.lastError || !fresh) {
+          setExecuteStatus('无法读取当前标签页：' + ((chrome.runtime.lastError && chrome.runtime.lastError.message) || '标签已关闭'));
           return;
         }
-        waitForTabComplete(tab.id).then(function() {
-          setTimeout(function() {
-            refreshSearchResultTable();
-            var filterVal = publishTimeFilterEl ? (publishTimeFilterEl.value || '').trim() : '';
-            var thenWait = function() {
-              waitWithCountdown(EXECUTE_WAIT_MS, statusPrefix).then(function() { doNext(index + 1); });
-            };
-            if (filterVal) {
-              setExecuteStatus(statusPrefix + ' · 应用筛选「' + filterVal + '」');
-              applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
-                setTimeout(refreshSearchResultTable, 3000);
-                thenWait();
-              });
-            } else {
-              thenWait();
+        var plan = getSearchNavigatePlan(fresh.url || '');
+        if (plan.needTabLoad) {
+          chrome.tabs.update(tab.id, { url: plan.url }, function() {
+            if (chrome.runtime.lastError) {
+              setExecuteStatus('无法打开搜索页：' + chrome.runtime.lastError.message);
+              return;
             }
-          }, 800);
-        });
+            whenReadyForHumanSearch(tab, true, 800, runInjectAndFollow);
+          });
+        } else {
+          whenReadyForHumanSearch(tab, false, 700, runInjectAndFollow);
+        }
       });
     }
 
@@ -1092,15 +1152,33 @@ function runSingleKeywordSearch(tab, keyword, needNavigate) {
       resolve(false);
       return;
     }
-    var url = buildSearchResultUrl(kw);
-    chrome.tabs.update(tab.id, { url: url }, function() {
-      if (chrome.runtime.lastError) {
+    function inject() {
+      setTimeout(function() {
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          world: 'MAIN',
+          func: _runHumanSearchOnXhsPage,
+          args: [kw]
+        }, function() { resolve(true); });
+      }, 800);
+    }
+    chrome.tabs.get(tab.id, function(fresh) {
+      if (chrome.runtime.lastError || !fresh) {
         resolve(false);
         return;
       }
-      waitForTabComplete(tab.id).then(function() {
-        setTimeout(function() { resolve(true); }, 800);
-      });
+      var plan = getSearchNavigatePlan(fresh.url || '');
+      if (plan.needTabLoad) {
+        chrome.tabs.update(tab.id, { url: plan.url }, function() {
+          if (chrome.runtime.lastError) {
+            resolve(false);
+            return;
+          }
+          waitForTabComplete(tab.id).then(inject);
+        });
+      } else {
+        inject();
+      }
     });
   });
 }
@@ -1415,51 +1493,76 @@ function runAutoTaskLoop() {
           sendCountdownToPage(true, '执行中 ' + (index + 1) + '/' + total, 0);
           var kwInfo = taskInfos[index] || taskInfos[0] || { Keywords: keyword };
           chrome.storage.local.set({ currentKeywordTask: kwInfo }, function() {
-            var url = buildSearchResultUrl(keyword);
-            chrome.tabs.update(tab.id, { url: url }, function() {
-              if (chrome.runtime.lastError) {
-                var acc = accountList[selectedAccountIndex];
-                var maxC = acc ? acc.maxCollectCount : 200;
-                pushAutoTaskLogLine('打开搜索页失败：' + chrome.runtime.lastError.message);
-                var key = String(selectedAccountIndex);
-                var today = getTodayDateStr();
-                if (!accountCollectStats[key]) accountCollectStats[key] = {};
-                accountCollectStats[key][today] = maxC;
-                saveCollectStats();
-                renderAccountList();
-                if (panelStale()) return;
-                loop();
+            function onOpenSearchError() {
+              var errMsg = (chrome.runtime.lastError && chrome.runtime.lastError.message) || '未知错误';
+              var acc = accountList[selectedAccountIndex];
+              var maxC = acc ? acc.maxCollectCount : 200;
+              pushAutoTaskLogLine('打开搜索页失败：' + errMsg);
+              var key = String(selectedAccountIndex);
+              var today = getTodayDateStr();
+              if (!accountCollectStats[key]) accountCollectStats[key] = {};
+              accountCollectStats[key][today] = maxC;
+              saveCollectStats();
+              renderAccountList();
+              if (panelStale()) return;
+              loop();
+            }
+            function runInjectAndFollow() {
+              if (panelStale()) return;
+              if (autoTaskAbort) { done(); return; }
+              chrome.scripting.executeScript({
+                target: { tabId: tab.id },
+                world: 'MAIN',
+                func: _runHumanSearchOnXhsPage,
+                args: [keyword]
+              }, function(execRes) {
+                if (chrome.runtime.lastError) {
+                  pushAutoTaskLogLine('拟人搜索：' + (chrome.runtime.lastError.message || '执行失败'));
+                } else if (!execRes || !execRes[0] || execRes[0].result !== true) {
+                  pushAutoTaskLogLine('拟人搜索未成功：请确认搜索框已出现（当前 URL 未带关键词）');
+                }
+                refreshSearchResultTable();
+                var filterVal = publishTimeFilterEl ? (publishTimeFilterEl.value || '').trim() : '';
+                var thenWait = function() {
+                  index++;
+                  var ms = getRandomIntervalMs();
+                  var waitText = '等待下一词 · ' + Math.ceil(ms / 1000) + ' 秒';
+                  pushAutoTaskLogLine(waitText);
+                  sendCountdownToPage(true, '请求关键词', Math.ceil(ms / 1000));
+                  waitRandomWithCountdown(ms, panelTaskSession).then(doNext);
+                };
+                if (filterVal) {
+                  setAutoTaskStatus(statusPrefix + ' · 应用筛选「' + filterVal + '」');
+                  applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
+                    setTimeout(refreshSearchResultTable, 3000);
+                    thenWait();
+                  }).catch(function() {
+                    thenWait();
+                  });
+                } else {
+                  thenWait();
+                }
+              });
+            }
+            chrome.tabs.get(tab.id, function(fresh) {
+              if (chrome.runtime.lastError || !fresh) {
+                pushAutoTaskLogLine('无法读取当前标签页 URL，跳过本词');
+                index++;
+                doNext();
                 return;
               }
-              waitForTabComplete(tab.id).then(function() {
-                if (panelStale()) return;
-                if (autoTaskAbort) { done(); return; }
-                setTimeout(function() {
-                  if (panelStale()) return;
-                  if (autoTaskAbort) { done(); return; }
-                  refreshSearchResultTable();
-                  var filterVal = publishTimeFilterEl ? (publishTimeFilterEl.value || '').trim() : '';
-                  var thenWait = function() {
-                    index++;
-                    var ms = getRandomIntervalMs();
-                    var waitText = '等待下一词 · ' + Math.ceil(ms / 1000) + ' 秒';
-                    pushAutoTaskLogLine(waitText);
-                    sendCountdownToPage(true, '请求关键词', Math.ceil(ms / 1000));
-                    waitRandomWithCountdown(ms, panelTaskSession).then(doNext);
-                  };
-                  if (filterVal) {
-                    setAutoTaskStatus(statusPrefix + ' · 应用筛选「' + filterVal + '」');
-                    applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
-                      setTimeout(refreshSearchResultTable, 3000);
-                      thenWait();
-                    }).catch(function() {
-                      thenWait();
-                    });
-                  } else {
-                    thenWait();
+              var plan = getSearchNavigatePlan(fresh.url || '');
+              if (plan.needTabLoad) {
+                chrome.tabs.update(tab.id, { url: plan.url }, function() {
+                  if (chrome.runtime.lastError) {
+                    onOpenSearchError();
+                    return;
                   }
-                }, 2000);
-              });
+                  whenReadyForHumanSearch(tab, true, 2000, runInjectAndFollow);
+                });
+              } else {
+                whenReadyForHumanSearch(tab, false, 900, runInjectAndFollow);
+              }
             });
           });
         }

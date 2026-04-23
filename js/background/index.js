@@ -114,6 +114,8 @@ function clearBackgroundAutoTaskScheduledTimers() {
 }
 var SEARCH_SITE_BASE_STORAGE_KEY = 'searchSiteBaseUrl';
 var SEARCH_SITE_BASE_DEFAULT = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
+/** 域外进入搜索时的固定 PC 搜索落地页 */
+var XHS_PC_SEARCH_LANDING = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
 var AUTO_TASK_AUTO_LOGIN_ENABLED_KEY = 'autoTaskAutoLoginEnabled';
 
 function setAutoTaskStatusInStorage(text) {
@@ -160,13 +162,34 @@ function normalizeSearchSiteBaseUrl(raw) {
   return s + '/search_result?source=web_search_result_notes';
 }
 
-function buildSearchResultUrlAsync(keyword, callback) {
+/** 搜索业务落地页：URL 不含 keyword（与侧栏「搜索页地址」一致） */
+function buildSearchLandingUrlAsync(callback) {
   chrome.storage.local.get([SEARCH_SITE_BASE_STORAGE_KEY], function(o) {
     var base = normalizeSearchSiteBaseUrl(o[SEARCH_SITE_BASE_STORAGE_KEY]);
-    var kw = keyword == null ? '' : String(keyword).trim();
-    var url = !kw ? base : base + (base.indexOf('?') >= 0 ? '&' : '?') + 'keyword=' + encodeURIComponent(kw);
-    callback(url);
+    try {
+      var u = new URL(base);
+      u.searchParams.delete('keyword');
+      callback(u.href);
+    } catch (e) {
+      callback(base);
+    }
   });
+}
+
+/** 与侧栏 getSearchNavigatePlan 一致（异步读侧栏搜索页地址） */
+function getSearchNavigatePlanAsync(tabUrl, cb) {
+  var u = (tabUrl || '').toLowerCase();
+  if (u.indexOf('xiaohongshu.com') === -1) {
+    cb({ needTabLoad: true, url: XHS_PC_SEARCH_LANDING });
+    return;
+  }
+  if (u.indexOf('search_result') === -1) {
+    buildSearchLandingUrlAsync(function(url) {
+      cb({ needTabLoad: true, url: url });
+    });
+    return;
+  }
+  cb({ needTabLoad: false, url: '' });
 }
 
 function getSearchSiteOriginFromStorage(callback) {
@@ -258,6 +281,12 @@ function searchByInputInPage(keyword) {
   input.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
   input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
   return true;
+}
+
+/** 注入到页面 MAIN：调用 content script 已注册的 humanSearch（见 js/script/xhs-human-search.js） */
+function _runHumanSearchOnXhsPage(keyword) {
+  if (typeof humanSearch !== 'function') return Promise.resolve(false);
+  return humanSearch(keyword);
 }
 
 function isPublishTimeFilterVisible() {
@@ -1463,92 +1492,128 @@ function runBackgroundAutoTaskLoop() {
             sendCountdownToPage(true, '执行中 ' + (index + 1) + '/' + total, 0);
             var kwInfo = taskInfos[index] || taskInfos[0] || { Keywords: keyword };
             chrome.storage.local.set({ currentKeywordTask: kwInfo }, function() {
-              buildSearchResultUrlAsync(keyword, function(url) {
-              chrome.tabs.update(tab.id, { url: url }, function() {
-                if (chrome.runtime.lastError) {
-                  chrome.storage.local.get(['selectedAccountIndex', 'accountCollectStats', 'accountList'], function(so) {
-                    var accIdx = parseInt(so.selectedAccountIndex, 10) || 0;
-                    var stats = so.accountCollectStats || {};
-                    var accs = so.accountList || [];
-                    var maxC = accs[accIdx] && accs[accIdx].maxCollectCount != null ? accs[accIdx].maxCollectCount : 200;
-                    var accKey = String(accIdx);
-                    var today = getTodayDateStr();
-                    if (!stats[accKey]) stats[accKey] = {};
-                    stats[accKey][today] = maxC;
-                    chrome.storage.local.set({ accountCollectStats: stats });
-                    pushAutoTaskLogLine('打开搜索页失败：' + chrome.runtime.lastError.message + '，已标记今日暂停采集');
-                    if (bgStale()) return;
-                    loop();
+              function onNavigateFailed() {
+                var errMsg = (chrome.runtime.lastError && chrome.runtime.lastError.message) || '未知错误';
+                chrome.storage.local.get(['selectedAccountIndex', 'accountCollectStats', 'accountList'], function(so) {
+                  var accIdx = parseInt(so.selectedAccountIndex, 10) || 0;
+                  var stats = so.accountCollectStats || {};
+                  var accs = so.accountList || [];
+                  var maxC = accs[accIdx] && accs[accIdx].maxCollectCount != null ? accs[accIdx].maxCollectCount : 200;
+                  var accKey = String(accIdx);
+                  var today = getTodayDateStr();
+                  if (!stats[accKey]) stats[accKey] = {};
+                  stats[accKey][today] = maxC;
+                  chrome.storage.local.set({ accountCollectStats: stats });
+                  pushAutoTaskLogLine('打开搜索页失败：' + errMsg + '，已标记今日暂停采集');
+                  if (bgStale()) return;
+                  loop();
+                });
+              }
+              function runInjectAndFollow() {
+                if (bgStale()) return;
+                if (backgroundAutoTaskAbort) { done(); return; }
+                chrome.scripting.executeScript({
+                  target: { tabId: tab.id },
+                  world: 'MAIN',
+                  func: _runHumanSearchOnXhsPage,
+                  args: [keyword]
+                }, function(execRes) {
+                  if (chrome.runtime.lastError) {
+                    pushAutoTaskLogLine('拟人搜索：' + (chrome.runtime.lastError.message || '执行失败'));
+                  } else {
+                    var ok = execRes && execRes[0] && execRes[0].result === true;
+                    if (!ok) {
+                      pushAutoTaskLogLine('拟人搜索未成功（humanSearch 未就绪或搜索框未出现）；当前未通过 URL 传关键词');
+                    }
+                  }
+                  chrome.storage.local.get(['publishTimeFilter'], function(o) {
+                    var filterVal = (o.publishTimeFilter || '').trim();
+                    var thenWait = function() {
+                      index++;
+                      getRandomIntervalMsFromStorage().then(function(ms) {
+                        if (bgStale()) return;
+                        if (backgroundAutoTaskAbort) { done(); return; }
+                        var sec = Math.ceil(ms / 1000);
+                        var waitText = '等待下一词 · ' + sec + ' 秒';
+                        setAutoTaskStatusInStorage(waitText);
+                        pushAutoTaskLogLine(waitText);
+                        sendCountdownToPage(true, '请求关键词', sec);
+                        var remainSec = sec;
+                        backgroundAutoTaskCountdownTimerId = setInterval(function() {
+                          if (bgStale()) {
+                            if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
+                            backgroundAutoTaskCountdownTimerId = null;
+                            return;
+                          }
+                          if (backgroundAutoTaskAbort) {
+                            if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
+                            backgroundAutoTaskCountdownTimerId = null;
+                            return;
+                          }
+                          remainSec--;
+                          if (remainSec <= 0) {
+                            if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
+                            backgroundAutoTaskCountdownTimerId = null;
+                            return;
+                          }
+                          setAutoTaskStatusInStorage('等待下一词 · ' + remainSec + ' 秒');
+                          sendCountdownToPage(true, '请求关键词', remainSec);
+                        }, 1000);
+                        backgroundAutoTaskWaitTimeoutId = setTimeout(function() {
+                          backgroundAutoTaskWaitTimeoutId = null;
+                          if (bgStale()) return;
+                          if (backgroundAutoTaskCountdownTimerId) {
+                            clearInterval(backgroundAutoTaskCountdownTimerId);
+                            backgroundAutoTaskCountdownTimerId = null;
+                          }
+                          doNext();
+                        }, ms);
+                      });
+                    };
+                    var afterSearchScroll = function() {
+                      scrollAndWaitForPage2(tab.id, thenWait);
+                    };
+                    if (filterVal) {
+                      setAutoTaskStatusInStorage(statusPrefix + ' · 应用筛选「' + filterVal + '」');
+                      applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
+                        afterSearchScroll();
+                      }).catch(function() {
+                        afterSearchScroll();
+                      });
+                    } else {
+                      afterSearchScroll();
+                    }
                   });
+                });
+              }
+              chrome.tabs.get(tab.id, function(fresh) {
+                if (chrome.runtime.lastError || !fresh) {
+                  pushAutoTaskLogLine('无法读取当前标签页 URL，跳过本词');
+                  index++;
+                  doNext();
                   return;
                 }
-                waitForTabComplete(tab.id).then(function() {
-                  if (bgStale()) return;
-                  if (backgroundAutoTaskAbort) { done(); return; }
-                  setTimeout(function() {
-                    if (bgStale()) return;
-                    if (backgroundAutoTaskAbort) { done(); return; }
-                    chrome.storage.local.get(['publishTimeFilter'], function(o) {
-                      var filterVal = (o.publishTimeFilter || '').trim();
-                      var thenWait = function() {
-                        index++;
-                        getRandomIntervalMsFromStorage().then(function(ms) {
-                          if (bgStale()) return;
-                          if (backgroundAutoTaskAbort) { done(); return; }
-                          var sec = Math.ceil(ms / 1000);
-                          var waitText = '等待下一词 · ' + sec + ' 秒';
-                          setAutoTaskStatusInStorage(waitText);
-                          pushAutoTaskLogLine(waitText);
-                          sendCountdownToPage(true, '请求关键词', sec);
-                          var remainSec = sec;
-                          backgroundAutoTaskCountdownTimerId = setInterval(function() {
-                            if (bgStale()) {
-                              if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
-                              backgroundAutoTaskCountdownTimerId = null;
-                              return;
-                            }
-                            if (backgroundAutoTaskAbort) {
-                              if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
-                              backgroundAutoTaskCountdownTimerId = null;
-                              return;
-                            }
-                            remainSec--;
-                            if (remainSec <= 0) {
-                              if (backgroundAutoTaskCountdownTimerId) clearInterval(backgroundAutoTaskCountdownTimerId);
-                              backgroundAutoTaskCountdownTimerId = null;
-                              return;
-                            }
-                            setAutoTaskStatusInStorage('等待下一词 · ' + remainSec + ' 秒');
-                            sendCountdownToPage(true, '请求关键词', remainSec);
-                          }, 1000);
-                          backgroundAutoTaskWaitTimeoutId = setTimeout(function() {
-                            backgroundAutoTaskWaitTimeoutId = null;
-                            if (bgStale()) return;
-                            if (backgroundAutoTaskCountdownTimerId) {
-                              clearInterval(backgroundAutoTaskCountdownTimerId);
-                              backgroundAutoTaskCountdownTimerId = null;
-                            }
-                            doNext();
-                          }, ms);
-                        });
-                      };
-                      var afterSearchScroll = function() {
-                        scrollAndWaitForPage2(tab.id, thenWait);
-                      };
-                      if (filterVal) {
-                        setAutoTaskStatusInStorage(statusPrefix + ' · 应用筛选「' + filterVal + '」');
-                        applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
-                          afterSearchScroll();
-                        }).catch(function() {
-                          afterSearchScroll();
-                        });
-                      } else {
-                        afterSearchScroll();
+                getSearchNavigatePlanAsync(fresh.url || '', function(plan) {
+                  if (plan.needTabLoad) {
+                    chrome.tabs.update(tab.id, { url: plan.url }, function() {
+                      if (chrome.runtime.lastError) {
+                        onNavigateFailed();
+                        return;
                       }
+                      waitForTabComplete(tab.id).then(function() {
+                        if (bgStale()) return;
+                        if (backgroundAutoTaskAbort) { done(); return; }
+                        setTimeout(runInjectAndFollow, 2000);
+                      });
                     });
-                  }, 2000);
+                  } else {
+                    setTimeout(function() {
+                      if (bgStale()) return;
+                      if (backgroundAutoTaskAbort) { done(); return; }
+                      runInjectAndFollow();
+                    }, 900);
+                  }
                 });
-              });
               });
             });
           }

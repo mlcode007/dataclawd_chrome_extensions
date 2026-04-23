@@ -1795,6 +1795,12 @@ function runAutoTaskLoop() {
               }
               if (panelStale()) return;
               if (autoTaskAbort) { done(); return; }
+              if (response && response.throttled) {
+                setAutoTaskStatus('检测到未登录，未满5分钟不重复打开登录页（剩约' + (response.remainSec || 0) + '秒）');
+                pushAutoTaskLogLine('距上次登录处理未满5分钟，跳过刷新，继续尝试拉任务');
+                proceedFetchKeyword();
+                return;
+              }
               if (response && response.ok) {
                 pushAutoTaskLogLine('自动登录成功，继续获取关键词任务');
                 proceedFetchKeyword();
@@ -2612,8 +2618,21 @@ function doAutoLogin() {
     return;
   }
 
-  setAccountStatus('正在导航到登录页…', 'ing');
-  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
+  var LAST_LOGIN_DISRUPTIVE_AT_KEY_PANEL = 'lastLoginDisruptiveAt';
+  var LOGIN_DISRUPTIVE_COOLDOWN_MS_PANEL = 5 * 60 * 1000;
+  chrome.storage.local.get([LAST_LOGIN_DISRUPTIVE_AT_KEY_PANEL], function(stCooldown) {
+    var lastT = parseInt(stCooldown[LAST_LOGIN_DISRUPTIVE_AT_KEY_PANEL], 10) || 0;
+    var nowT = Date.now();
+    if (lastT > 0 && nowT - lastT < LOGIN_DISRUPTIVE_COOLDOWN_MS_PANEL) {
+      var remainSecPanel = Math.ceil((LOGIN_DISRUPTIVE_COOLDOWN_MS_PANEL - (nowT - lastT)) / 1000);
+      setAccountStatus('距上次打开登录页未满5分钟（约 ' + remainSecPanel + ' 秒后再试）', 'err');
+      return;
+    }
+    var markP = {};
+    markP[LAST_LOGIN_DISRUPTIVE_AT_KEY_PANEL] = nowT;
+    chrome.storage.local.set(markP);
+    setAccountStatus('正在导航到登录页…', 'ing');
+    chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
     var tab = tabs[0];
     if (!tab || !tab.id) {
       setAccountStatus('无法获取当前标签页', 'err');
@@ -2714,6 +2733,7 @@ function doAutoLogin() {
         }, 5000);
       });
     });
+  });
   });
 }
 

@@ -64,9 +64,13 @@ chrome.runtime.onMessage.addListener(function(msg, sender, sendResponse) {
     return false;
   }
   if (msg.type === 'runNavigateThenAutoLogin' && msg.tabId != null) {
-    runNavigateThenAutoLogin(msg.tabId, function(success) {
-      sendResponse({ ok: !!success });
-    });
+    runNavigateThenAutoLogin(msg.tabId, function(result, remainSec) {
+      if (result === 'throttled') {
+        sendResponse({ ok: true, throttled: true, remainSec: remainSec });
+        return;
+      }
+      sendResponse({ ok: !!result });
+    }, null);
     return true;
   }
   if (msg.type !== 'xhsCallbackFetch' || !msg.url || msg.body === undefined) {
@@ -956,8 +960,36 @@ function _doAutoLoginOnTab(tabId, acc, accIdx, onDone) {
   });
 }
 
+/** 打开登录页 / 弹窗处理中的刷新等，最短间隔（与侧栏「自动登录」共用同一冷却） */
+var LOGIN_DISRUPTIVE_COOLDOWN_MS = 5 * 60 * 1000;
+var LAST_LOGIN_DISRUPTIVE_AT_KEY = 'lastLoginDisruptiveAt';
+
+function readLastLoginDisruptiveAt(cb) {
+  chrome.storage.local.get([LAST_LOGIN_DISRUPTIVE_AT_KEY], function(o) {
+    cb(parseInt(o[LAST_LOGIN_DISRUPTIVE_AT_KEY], 10) || 0);
+  });
+}
+
+function markLoginDisruptiveActionNow() {
+  var p = {};
+  p[LAST_LOGIN_DISRUPTIVE_AT_KEY] = Date.now();
+  chrome.storage.local.set(p);
+}
+
+function ifLoginDisruptiveAllowedOrThrottle(onAllowed, onThrottledRemainSec) {
+  readLastLoginDisruptiveAt(function(last) {
+    var now = Date.now();
+    if (last > 0 && now - last < LOGIN_DISRUPTIVE_COOLDOWN_MS) {
+      onThrottledRemainSec(Math.ceil((LOGIN_DISRUPTIVE_COOLDOWN_MS - (now - last)) / 1000));
+    } else {
+      onAllowed();
+    }
+  });
+}
+
 /**
  * 与侧栏「自动登录」一致：打开「自动登录打开页」→ 等待加载 → 5 秒后再填手机号/接码/登录
+ * onDone(true|false) 表示登录流程结果；onDone('throttled', remainSec) 表示未满冷却跳过跳转（不刷新）
  */
 function runNavigateThenAutoLogin(tabId, onDone, expectedTaskSessionGen) {
   function loginChainStale() {
@@ -997,9 +1029,12 @@ function runNavigateThenAutoLogin(tabId, onDone, expectedTaskSessionGen) {
       if (onDone) onDone(false);
       return;
     }
-    setAutoTaskStatusInStorage('正在打开登录页并自动登录…');
-    pushAutoTaskLogLine('正在打开「自动登录打开页」并登录（与侧栏「自动登录」相同流程）…');
-    getAutoLoginPageUrlFromStorage(function(loginUrl) {
+    ifLoginDisruptiveAllowedOrThrottle(
+      function proceedLoginNavigate() {
+        markLoginDisruptiveActionNow();
+        setAutoTaskStatusInStorage('正在打开登录页并自动登录…');
+        pushAutoTaskLogLine('正在打开「自动登录打开页」并登录（与侧栏「自动登录」相同流程）…');
+        getAutoLoginPageUrlFromStorage(function(loginUrl) {
       if (loginChainStale()) {
         if (onDone) onDone(false);
         return;
@@ -1041,6 +1076,13 @@ function runNavigateThenAutoLogin(tabId, onDone, expectedTaskSessionGen) {
         });
       });
     });
+      }
+      ,
+      function(remainSecThrottled) {
+        pushAutoTaskLogLine('距上次登录页/刷新未满5分钟（剩余约 ' + remainSecThrottled + ' 秒），跳过本次打开登录页');
+        if (onDone) onDone('throttled', remainSecThrottled);
+      }
+    );
   });
 }
 
@@ -1072,15 +1114,18 @@ function handleLoginDialogDetected(sender) {
       return;
     }
 
-    _autoLoginInProgress = true;
-    var taskWasRunning = o.autoTaskRunning || backgroundAutoTaskRunning;
-    pushAutoTaskLogLine('检测到登录弹窗，刷新页面确认登录状态…');
+    ifLoginDisruptiveAllowedOrThrottle(
+      function beginLoginDialogFlow() {
+        markLoginDisruptiveActionNow();
+        _autoLoginInProgress = true;
+        var taskWasRunning = o.autoTaskRunning || backgroundAutoTaskRunning;
+        pushAutoTaskLogLine('检测到登录弹窗，刷新页面确认登录状态…');
 
-    if (taskWasRunning) {
-      _stopAutoTaskForLogin();
-    }
+        if (taskWasRunning) {
+          _stopAutoTaskForLogin();
+        }
 
-    chrome.tabs.reload(tabId, {}, function() {
+        chrome.tabs.reload(tabId, {}, function() {
       waitForTabComplete(tabId).then(function() {
         setTimeout(function() {
           chrome.scripting.executeScript({
@@ -1145,6 +1190,12 @@ function handleLoginDialogDetected(sender) {
         }, 3000);
       });
     });
+      }
+      ,
+      function(remainDlgThrottled) {
+        pushAutoTaskLogLine('登录弹窗：距上次处理未满5分钟（剩余约' + remainDlgThrottled + '秒），跳过刷新');
+      }
+    );
   });
 }
 
@@ -1391,6 +1442,7 @@ function doBackgroundAutoSwitchAccount(tabId, nextIndex, accountList, callback) 
             setAutoTaskStatusInStorage('正在登录账号 ' + (nextIndex + 1) + '…');
 
             getAutoLoginPageUrlFromStorage(function(loginPageUrl) {
+            markLoginDisruptiveActionNow();
             chrome.tabs.update(tabId, { url: loginPageUrl }, function() {
               waitForTabComplete(tabId).then(function() {
                 setTimeout(function() {
@@ -1901,13 +1953,19 @@ function runBackgroundAutoTaskLoop() {
               pushAutoTaskLogLine('检测到未登录，开始自动登录后再获取关键词任务…');
               runNavigateThenAutoLogin(
                 tab.id,
-                function(success) {
+                function(result, remainSec) {
                   if (bgStale()) return;
                   if (backgroundAutoTaskAbort) {
                     done();
                     return;
                   }
-                  if (success) {
+                  if (result === 'throttled') {
+                    setAutoTaskStatusInStorage('检测到未登录，未满5分钟不重复打开登录页（剩约' + (remainSec || 0) + '秒）');
+                    pushAutoTaskLogLine('距上次登录处理未满5分钟，跳过刷新，继续尝试拉任务');
+                    proceedFetchKeyword();
+                    return;
+                  }
+                  if (result) {
                     pushAutoTaskLogLine('自动登录成功，继续获取关键词任务');
                     proceedFetchKeyword();
                   } else {

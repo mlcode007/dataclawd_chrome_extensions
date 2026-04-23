@@ -234,12 +234,19 @@ function getSearchNavigatePlan(tabUrl) {
 }
 
 function whenReadyForHumanSearch(tab, needTabLoad, delayMs, fn) {
+  function safeFn() {
+    try {
+      fn();
+    } catch (e) {
+      pushAutoTaskLogLine('自动任务步骤异常：' + (e && e.message ? e.message : String(e)));
+    }
+  }
   if (needTabLoad) {
     waitForTabComplete(tab.id).then(function() {
-      setTimeout(fn, delayMs);
+      setTimeout(safeFn, delayMs);
     });
   } else {
-    setTimeout(fn, delayMs);
+    setTimeout(safeFn, delayMs);
   }
 }
 
@@ -1103,10 +1110,23 @@ function getKeywordTaskInfos(data) {
   return [];
 }
 
+var KEYWORD_TASK_FETCH_TIMEOUT_MS = 45000;
+var HUMAN_SEARCH_INJECT_TIMEOUT_MS = 120000;
+var PAGE_CHECK_WATCHDOG_MS = 25000;
+
 function fetchKeywordTask() {
   var url = getTaskApiUrl();
   console.log('[DataCrawler] 获取任务请求:', url);
-  return fetch(url, { method: 'GET' })
+  var controller = new AbortController();
+  var timer = setTimeout(function() {
+    try {
+      controller.abort();
+    } catch (e) {}
+  }, KEYWORD_TASK_FETCH_TIMEOUT_MS);
+  return fetch(url, { method: 'GET', signal: controller.signal })
+    .finally(function() {
+      clearTimeout(timer);
+    })
     .then(function(res) {
       if (!res.ok) {
         var msg = 'HTTP ' + res.status;
@@ -1123,8 +1143,44 @@ function fetchKeywordTask() {
     })
     .catch(function(err) {
       console.warn('[DataCrawler] get_keyword_task error', err);
+      if (err && err.name === 'AbortError') {
+        throw new Error('获取任务超时（' + Math.round(KEYWORD_TASK_FETCH_TIMEOUT_MS / 1000) + ' 秒）');
+      }
       throw err;
     });
+}
+
+function executeScriptWithTimeout(tabId, details, timeoutMs) {
+  return new Promise(function(resolve) {
+    var finished = false;
+    var to = setTimeout(function() {
+      if (finished) return;
+      finished = true;
+      resolve({ timedOut: true, chromeError: null, results: null });
+    }, timeoutMs);
+    try {
+      chrome.scripting.executeScript({
+        target: { tabId: tabId },
+        world: details.world || 'MAIN',
+        func: details.func,
+        args: details.args || []
+      }, function(results) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(to);
+        if (chrome.runtime.lastError) {
+          resolve({ timedOut: false, chromeError: chrome.runtime.lastError.message || '执行失败', results: null });
+          return;
+        }
+        resolve({ timedOut: false, chromeError: null, results: results });
+      });
+    } catch (e) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(to);
+      resolve({ timedOut: false, chromeError: String(e && e.message ? e.message : e), results: null });
+    }
+  });
 }
 
 function getRandomIntervalMs() {
@@ -1344,28 +1400,40 @@ var KEYWORD_FETCH_PAGE_CHECK_ROUNDS = 5;
 var KEYWORD_FETCH_PAGE_CHECK_INTERVAL_MS = 500;
 function runKeywordFetchPageChecks(tabId, isStale, cb) {
   var passed = 0;
+  var finished = false;
+  var watchdog = setTimeout(function() {
+    if (finished || isStale()) return;
+    pushAutoTaskLogLine('页面状态检测超时（' + Math.round(PAGE_CHECK_WATCHDOG_MS / 1000) + ' 秒），继续请求关键词任务');
+    finishOnce(false);
+  }, PAGE_CHECK_WATCHDOG_MS);
+  function finishOnce(v) {
+    if (finished) return;
+    finished = true;
+    clearTimeout(watchdog);
+    cb(v);
+  }
   function step() {
-    if (isStale()) return;
+    if (isStale() || finished) return;
     chrome.scripting.executeScript({
       target: { tabId: tabId },
       world: 'MAIN',
       func: _pageShouldBlockKeywordFetch,
       args: []
     }, function(results) {
-      if (isStale()) return;
+      if (isStale() || finished) return;
       if (chrome.runtime.lastError) {
         pushAutoTaskLogLine('无法检测页面状态（' + (chrome.runtime.lastError.message || '') + '），继续请求关键词任务');
-        cb(false);
+        finishOnce(false);
         return;
       }
       var verdict = results && results[0] && results[0].result;
       if (verdict && verdict.block) {
-        cb(verdict);
+        finishOnce(verdict);
         return;
       }
       passed++;
       if (passed >= KEYWORD_FETCH_PAGE_CHECK_ROUNDS) {
-        cb(null);
+        finishOnce(null);
         return;
       }
       setTimeout(step, KEYWORD_FETCH_PAGE_CHECK_INTERVAL_MS);
@@ -1584,39 +1652,56 @@ function runAutoTaskLoop() {
             function runInjectAndFollow() {
               if (panelStale()) return;
               if (autoTaskAbort) { done(); return; }
-              chrome.scripting.executeScript({
-                target: { tabId: tab.id },
-                world: 'MAIN',
-                func: _runHumanSearchOnXhsPage,
-                args: [keyword]
-              }, function(execRes) {
-                if (chrome.runtime.lastError) {
-                  pushAutoTaskLogLine('拟人搜索：' + (chrome.runtime.lastError.message || '执行失败'));
-                } else if (!execRes || !execRes[0] || execRes[0].result !== true) {
-                  pushAutoTaskLogLine('拟人搜索未成功：请确认搜索框已出现（当前 URL 未带关键词）');
-                }
-                refreshSearchResultTable();
-                var filterVal = publishTimeFilterEl ? (publishTimeFilterEl.value || '').trim() : '';
-                var thenWait = function() {
+              function afterInject(execPkg) {
+                try {
+                  execPkg = execPkg || {};
+                  if (execPkg.timedOut) {
+                    pushAutoTaskLogLine('拟人搜索：注入超时（' + Math.round(HUMAN_SEARCH_INJECT_TIMEOUT_MS / 1000) + ' 秒），仍继续间隔与下一词');
+                  } else if (execPkg.chromeError) {
+                    pushAutoTaskLogLine('拟人搜索：' + execPkg.chromeError);
+                  } else {
+                    var execRes = execPkg.results;
+                    if (!execRes || !execRes[0] || execRes[0].result !== true) {
+                      pushAutoTaskLogLine('拟人搜索未成功：请确认搜索框已出现（当前 URL 未带关键词）');
+                    }
+                  }
+                  refreshSearchResultTable();
+                  var filterVal = publishTimeFilterEl ? (publishTimeFilterEl.value || '').trim() : '';
+                  var thenWait = function() {
+                    index++;
+                    var ms = getRandomIntervalMs();
+                    var waitText = '等待下一词 · ' + Math.ceil(ms / 1000) + ' 秒';
+                    pushAutoTaskLogLine(waitText);
+                    sendCountdownToPage(true, '请求关键词', Math.ceil(ms / 1000));
+                    waitRandomWithCountdown(ms, panelTaskSession).then(doNext);
+                  };
+                  if (filterVal) {
+                    setAutoTaskStatus(statusPrefix + ' · 应用筛选「' + filterVal + '」');
+                    applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
+                      setTimeout(refreshSearchResultTable, 3000);
+                      thenWait();
+                    }).catch(function() {
+                      thenWait();
+                    });
+                  } else {
+                    thenWait();
+                  }
+                } catch (e) {
+                  pushAutoTaskLogLine('拟人搜索后续异常：' + (e && e.message ? e.message : String(e)));
                   index++;
-                  var ms = getRandomIntervalMs();
-                  var waitText = '等待下一词 · ' + Math.ceil(ms / 1000) + ' 秒';
-                  pushAutoTaskLogLine(waitText);
-                  sendCountdownToPage(true, '请求关键词', Math.ceil(ms / 1000));
-                  waitRandomWithCountdown(ms, panelTaskSession).then(doNext);
-                };
-                if (filterVal) {
-                  setAutoTaskStatus(statusPrefix + ' · 应用筛选「' + filterVal + '」');
-                  applyPublishTimeFilterAfterSearch(tab.id, filterVal).then(function() {
-                    setTimeout(refreshSearchResultTable, 3000);
-                    thenWait();
-                  }).catch(function() {
-                    thenWait();
-                  });
-                } else {
-                  thenWait();
+                  scheduleLoop(5000);
                 }
-              });
+              }
+              executeScriptWithTimeout(tab.id, { world: 'MAIN', func: _runHumanSearchOnXhsPage, args: [keyword] }, HUMAN_SEARCH_INJECT_TIMEOUT_MS)
+                .then(function(execPkg) {
+                  try {
+                    afterInject(execPkg);
+                  } catch (e) {
+                    pushAutoTaskLogLine('拟人搜索后续同步异常：' + (e && e.message ? e.message : String(e)));
+                    index++;
+                    scheduleLoop(5000);
+                  }
+                });
             }
             chrome.tabs.get(tab.id, function(fresh) {
               if (chrome.runtime.lastError || !fresh) {

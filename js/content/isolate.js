@@ -98,11 +98,22 @@ function parseXhsSearchResultItems(dataItems) {
 }
 
 var CALLBACK_MAX_RETRIES = 5;
+/** 单次 sendMessage 等待 background 响应的上限（需略大于 background 内 fetch 超时），避免 service worker 挂死导致页面 Promise 永不结束 */
+var CALLBACK_SENDMESSAGE_TIMEOUT_MS = 72000;
 
 // 单次回传由 background 发起，避免页面环境下 HTTP/混合内容/CORS 导致 Failed to fetch
 function doOneCallbackRequest(url, body) {
   return new Promise(function(resolve, reject) {
+    var finished = false;
+    var timer = setTimeout(function() {
+      if (finished) return;
+      finished = true;
+      reject(new Error('回传通道超时（' + Math.round(CALLBACK_SENDMESSAGE_TIMEOUT_MS / 1000) + ' 秒无响应）'));
+    }, CALLBACK_SENDMESSAGE_TIMEOUT_MS);
     chrome.runtime.sendMessage({ type: 'xhsCallbackFetch', url: url, body: body }, function(response) {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message || 'Extension context invalid'));
         return;

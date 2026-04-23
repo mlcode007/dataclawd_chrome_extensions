@@ -117,6 +117,87 @@ var SEARCH_SITE_BASE_DEFAULT = 'https://www.xiaohongshu.com/search_result?source
 /** 域外进入搜索时的固定 PC 搜索落地页 */
 var XHS_PC_SEARCH_LANDING = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
 var AUTO_TASK_AUTO_LOGIN_ENABLED_KEY = 'autoTaskAutoLoginEnabled';
+var AUTO_TASK_XHS_WORK_TAB_ID_KEY = 'autoTaskXhsWorkTabId';
+
+function isXhsLikeHost(url) {
+  var u = (url || '').toLowerCase();
+  return u.indexOf('xiaohongshu.com') !== -1 || u.indexOf('rednote.com') !== -1;
+}
+
+function getXhsWorkTab() {
+  return new Promise(function(resolve) {
+    function finishBest(tab) {
+      if (tab && tab.id && isXhsLikeHost(tab.url)) {
+        var patch = {};
+        patch[AUTO_TASK_XHS_WORK_TAB_ID_KEY] = tab.id;
+        chrome.storage.local.set(patch);
+      }
+      resolve(tab || null);
+    }
+    chrome.storage.local.get([AUTO_TASK_XHS_WORK_TAB_ID_KEY], function(o) {
+      var saved = parseInt(o[AUTO_TASK_XHS_WORK_TAB_ID_KEY], 10);
+      if (!isNaN(saved) && saved > 0) {
+        chrome.tabs.get(saved, function(t) {
+          if (!chrome.runtime.lastError && t && t.id && isXhsLikeHost(t.url) && !t.discarded) {
+            finishBest(t);
+            return;
+          }
+          queryActiveThenBroad();
+        });
+        return;
+      }
+      queryActiveThenBroad();
+    });
+    function queryActiveThenBroad() {
+      chrome.tabs.query({ active: true, lastFocusedWindow: true }, function(tabs) {
+        var activeT = tabs && tabs[0];
+        if (activeT && activeT.id && isXhsLikeHost(activeT.url) && !activeT.discarded) {
+          finishBest(activeT);
+          return;
+        }
+        chrome.tabs.query({
+          url: [
+            '*://*.xiaohongshu.com/*',
+            '*://xiaohongshu.com/*',
+            '*://*.rednote.com/*',
+            '*://rednote.com/*'
+          ]
+        }, function(xhsTabs) {
+          if (xhsTabs && xhsTabs.length) {
+            var preferWin = activeT && activeT.windowId;
+            var pick = null;
+            var i;
+            if (preferWin != null) {
+              for (i = 0; i < xhsTabs.length; i++) {
+                if (xhsTabs[i].windowId === preferWin && xhsTabs[i].active) {
+                  pick = xhsTabs[i];
+                  break;
+                }
+              }
+            }
+            if (!pick) {
+              for (i = 0; i < xhsTabs.length; i++) {
+                if (xhsTabs[i].active) {
+                  pick = xhsTabs[i];
+                  break;
+                }
+              }
+            }
+            if (!pick) {
+              xhsTabs.sort(function(a, b) {
+                return (b.lastAccessed || 0) - (a.lastAccessed || 0);
+              });
+              pick = xhsTabs[0];
+            }
+            finishBest(pick);
+            return;
+          }
+          finishBest(activeT || null);
+        });
+      });
+    }
+  });
+}
 
 function setAutoTaskStatusInStorage(text) {
   chrome.storage.local.set({ autoTaskStatus: text || '' });
@@ -128,11 +209,30 @@ function pushAutoTaskLogLine(text) {
 }
 
 function sendCountdownToPage(show, text, seconds) {
-  chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
-    if (!tabs[0] || !tabs[0].id) return;
+  var payload = { type: 'dataCrawlerCountdown', show: show, text: text, seconds: seconds };
+  function trySend(tabId) {
+    if (!tabId) return;
     try {
-      chrome.tabs.sendMessage(tabs[0].id, { type: 'dataCrawlerCountdown', show: show, text: text, seconds: seconds });
+      chrome.tabs.sendMessage(tabId, payload);
     } catch (e) {}
+  }
+  chrome.storage.local.get([AUTO_TASK_XHS_WORK_TAB_ID_KEY], function(o) {
+    var tid = parseInt(o[AUTO_TASK_XHS_WORK_TAB_ID_KEY], 10);
+    if (!isNaN(tid) && tid > 0) {
+      chrome.tabs.get(tid, function(t) {
+        if (!chrome.runtime.lastError && t && t.id && isXhsLikeHost(t.url)) {
+          trySend(t.id);
+          return;
+        }
+        chrome.tabs.query({ active: true, lastFocusedWindow: true }, function(tabs) {
+          if (tabs[0] && tabs[0].id) trySend(tabs[0].id);
+        });
+      });
+      return;
+    }
+    chrome.tabs.query({ active: true, lastFocusedWindow: true }, function(tabs) {
+      if (tabs[0] && tabs[0].id) trySend(tabs[0].id);
+    });
   });
 }
 
@@ -145,11 +245,6 @@ function getApiHostFromStorage() {
       resolve(h);
     });
   });
-}
-
-function isXhsLikeHost(url) {
-  var u = (url || '').toLowerCase();
-  return u.indexOf('xiaohongshu.com') !== -1 || u.indexOf('rednote.com') !== -1;
 }
 
 function normalizeSearchSiteBaseUrl(raw) {
@@ -1338,11 +1433,7 @@ function runBackgroundAutoTaskLoop() {
   backgroundAutoTaskDoneCallback = done;
 
   function getTab() {
-    return new Promise(function(resolve) {
-      chrome.tabs.query({ active: true, currentWindow: true }, function(tabs) {
-        resolve(tabs[0] || null);
-      });
-    });
+    return getXhsWorkTab();
   }
 
   function checkAndSwitchIfNeeded(thenContinue) {

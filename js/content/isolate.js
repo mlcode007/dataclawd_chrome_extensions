@@ -10,6 +10,8 @@ if (window.location.href.indexOf('user/profile') !== -1) {
 var ADD_SEARCH_RESULT_PATH = 'xhs_extension/add_xhs_app_search_result';
 // 最多在 storage 里保留的页数，超出则只保留最近 N 页，避免 storage 与界面内容无限增长
 var MAX_PAGES_IN_STORAGE = 50;
+/** 搜索回传接口仅上报前 N 页；超过则不上报（本地 storage 仍照常写入） */
+var SEARCH_RESULT_CALLBACK_MAX_PAGE = 2;
 
 function getTraceId() {
   return 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'.replace(/x/g, function() {
@@ -211,6 +213,13 @@ window.addEventListener('message', function(event) {
     var interceptedKeyword = event.data.interceptedKeyword || '';
     var items = obj.data.items;
     if (!items || !items.length) return;
+
+    var pageNumForCallback = parseInt(pageNum, 10);
+    if (isNaN(pageNumForCallback) || pageNumForCallback < 1) pageNumForCallback = 1;
+    if (pageNumForCallback > SEARCH_RESULT_CALLBACK_MAX_PAGE) {
+      console.log('[DataCrawler] 回传跳过：仅上报第1–' + SEARCH_RESULT_CALLBACK_MAX_PAGE + '页，当前第' + pageNumForCallback + '页');
+      return;
+    }
 
     function getKeywordTaskThenSend(attempt) {
       chrome.storage.local.get('currentKeywordTask', function(res) {

@@ -122,6 +122,8 @@ var SEARCH_SITE_BASE_DEFAULT = 'https://www.xiaohongshu.com/search_result?source
 var XHS_PC_SEARCH_LANDING = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
 var AUTO_TASK_AUTO_LOGIN_ENABLED_KEY = 'autoTaskAutoLoginEnabled';
 var AUTO_TASK_XHS_WORK_TAB_ID_KEY = 'autoTaskXhsWorkTabId';
+/** 自动登录成功后，再等待此时长再拉关键词/启动后台采集，避免会话未就绪 */
+var POST_AUTO_LOGIN_SEARCH_DELAY_MS = 10000;
 
 function isXhsLikeHost(url) {
   var u = (url || '').toLowerCase();
@@ -1149,10 +1151,14 @@ function handleLoginDialogDetected(sender) {
                     _doAutoLoginOnTab(tabId, acc, accIdx, function(success) {
                       _autoLoginInProgress = false;
                       if (success) {
-                        pushAutoTaskLogLine('登录成功，自动启动采集任务');
+                        pushAutoTaskLogLine('登录成功，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后启动采集任务');
+                        setAutoTaskStatusInStorage('登录成功，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后启动采集任务…');
                         if (!backgroundAutoTaskRunning) {
                           backgroundAutoTaskAbort = false;
-                          runBackgroundAutoTaskLoop();
+                          setTimeout(function() {
+                            if (backgroundAutoTaskAbort) return;
+                            runBackgroundAutoTaskLoop();
+                          }, POST_AUTO_LOGIN_SEARCH_DELAY_MS);
                         }
                       } else {
                         pushAutoTaskLogLine('自动登录未完成，刷新页面检查登录状态…');
@@ -1164,10 +1170,14 @@ function handleLoginDialogDetected(sender) {
                               }, function(r2) {
                                 var needLogin2 = r2 && r2[0] && r2[0].result;
                                 if (!needLogin2) {
-                                  pushAutoTaskLogLine('刷新后确认已登录，自动启动采集任务');
+                                  pushAutoTaskLogLine('刷新后确认已登录，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后启动采集任务');
+                                  setAutoTaskStatusInStorage('已登录，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后启动采集任务…');
                                   if (!backgroundAutoTaskRunning) {
                                     backgroundAutoTaskAbort = false;
-                                    runBackgroundAutoTaskLoop();
+                                    setTimeout(function() {
+                                      if (backgroundAutoTaskAbort) return;
+                                      runBackgroundAutoTaskLoop();
+                                    }, POST_AUTO_LOGIN_SEARCH_DELAY_MS);
                                   }
                                 } else {
                                   pushAutoTaskLogLine('仍未登录，等待下次登录弹窗检测');
@@ -1359,6 +1369,10 @@ function _xhsClickLogout() {
 }
 
 function clearXhsCookiesBg(callback) {
+  // 暂时禁用：清除小红书/rednote 域下 Cookie（与侧栏 clearXhsCookies 同步；恢复时取消注释下方块并删除本段）
+  if (callback) callback(0);
+  return;
+  /*
   var domains = ['.xiaohongshu.com', 'www.xiaohongshu.com', '.rednote.com', 'www.rednote.com'];
   var total = 0;
   var pending = domains.length;
@@ -1384,6 +1398,7 @@ function clearXhsCookiesBg(callback) {
       });
     });
   });
+  */
 }
 
 /**
@@ -1503,9 +1518,11 @@ function doBackgroundAutoSwitchAccount(tabId, nextIndex, accountList, callback) 
                                     args: []
                                   }, function() {
                                     setTimeout(function() {
-                                      pushAutoTaskLogLine('账号 ' + (nextIndex + 1) + ' 登录完成');
-                                      setAutoTaskStatusInStorage('账号 ' + (nextIndex + 1) + ' 登录完成');
-                                      callback(true);
+                                      pushAutoTaskLogLine('账号 ' + (nextIndex + 1) + ' 登录完成，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后恢复采集');
+                                      setAutoTaskStatusInStorage('账号 ' + (nextIndex + 1) + ' 登录完成，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后恢复…');
+                                      setTimeout(function() {
+                                        callback(true);
+                                      }, POST_AUTO_LOGIN_SEARCH_DELAY_MS);
                                     }, 3000);
                                   });
                                 }, 800);
@@ -1966,8 +1983,16 @@ function runBackgroundAutoTaskLoop() {
                     return;
                   }
                   if (result) {
-                    pushAutoTaskLogLine('自动登录成功，继续获取关键词任务');
-                    proceedFetchKeyword();
+                    pushAutoTaskLogLine('自动登录成功，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后开启搜索任务');
+                    setAutoTaskStatusInStorage('自动登录成功，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后拉取关键词…');
+                    setTimeout(function() {
+                      if (bgStale()) return;
+                      if (backgroundAutoTaskAbort) {
+                        done();
+                        return;
+                      }
+                      proceedFetchKeyword();
+                    }, POST_AUTO_LOGIN_SEARCH_DELAY_MS);
                   } else {
                     pushAutoTaskLogLine('自动登录未完成，15 秒后重试');
                     sendCountdownToPage(true, '等待登录', 15);

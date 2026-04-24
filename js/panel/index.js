@@ -1113,6 +1113,8 @@ function getKeywordTaskInfos(data) {
 var KEYWORD_TASK_FETCH_TIMEOUT_MS = 45000;
 var HUMAN_SEARCH_INJECT_TIMEOUT_MS = 120000;
 var PAGE_CHECK_WATCHDOG_MS = 25000;
+/** 自动登录成功后再等待此时长再拉关键词/启动侧栏自动任务 */
+var POST_AUTO_LOGIN_SEARCH_DELAY_MS = 10000;
 
 function fetchKeywordTask() {
   var url = getTaskApiUrl();
@@ -1802,8 +1804,13 @@ function runAutoTaskLoop() {
                 return;
               }
               if (response && response.ok) {
-                pushAutoTaskLogLine('自动登录成功，继续获取关键词任务');
-                proceedFetchKeyword();
+                pushAutoTaskLogLine('自动登录成功，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后开启搜索任务');
+                setAutoTaskStatus('自动登录成功，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后拉取关键词…');
+                setTimeout(function() {
+                  if (panelStale()) return;
+                  if (autoTaskAbort) { done(); return; }
+                  proceedFetchKeyword();
+                }, POST_AUTO_LOGIN_SEARCH_DELAY_MS);
               } else {
                 pushAutoTaskLogLine('自动登录未完成，15 秒后重试');
                 sendCountdownToPage(true, '等待登录', 15);
@@ -2266,6 +2273,10 @@ function _xhsClickLogout() {
 }
 
 function clearXhsCookies(callback) {
+  // 暂时禁用：清除小红书/rednote 域下 Cookie（恢复时取消注释下方块并删除本段 early return）
+  if (callback) callback(0);
+  return;
+  /*
   var domains = ['.xiaohongshu.com', 'www.xiaohongshu.com', '.rednote.com', 'www.rednote.com'];
   var total = 0;
   var pending = domains.length;
@@ -2291,6 +2302,7 @@ function clearXhsCookies(callback) {
       });
     });
   });
+  */
 }
 
 function doAutoLogout() {
@@ -2448,11 +2460,16 @@ function _xhsClickLogin() {
   return false;
 }
 
-/** 自动登录成功后自动启动自动任务 */
+/** 自动登录成功后自动启动自动任务（延迟开启，避免会话未就绪） */
 function startAutoTaskAfterLogin() {
   if (autoTaskRunning) return;
-  pushAutoTaskLogLine('登录成功，自动启动采集任务');
-  runAutoTaskLoop();
+  pushAutoTaskLogLine('登录成功，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后自动启动采集任务');
+  setAutoTaskStatus('登录成功，' + Math.round(POST_AUTO_LOGIN_SEARCH_DELAY_MS / 1000) + ' 秒后启动采集任务…');
+  setTimeout(function() {
+    if (autoTaskRunning) return;
+    pushAutoTaskLogLine('自动启动采集任务');
+    runAutoTaskLoop();
+  }, POST_AUTO_LOGIN_SEARCH_DELAY_MS);
 }
 
 /**

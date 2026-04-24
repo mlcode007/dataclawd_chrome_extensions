@@ -214,19 +214,37 @@ function buildSearchLandingUrl() {
   }
 }
 
-/** 域外进入时的固定 PC 搜索落地页（拦包/回传依赖 search_result 路径） */
-var XHS_PC_SEARCH_LANDING = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
+function parseUrlHostname(urlStr) {
+  try {
+    return new URL(urlStr).hostname.toLowerCase() || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+/** 比较当前页与侧栏「搜索页地址」是否同一站点（忽略 www. 前缀） */
+function stripWwwHost(hostname) {
+  var h = hostname || '';
+  return h.indexOf('www.') === 0 ? h.slice(4) : h;
+}
+
+function hostnameMatchesConfiguredSearchSite(tabUrl) {
+  var tabH = stripWwwHost(parseUrlHostname(tabUrl));
+  var cfgH = stripWwwHost(parseUrlHostname(getSearchBaseUrl()));
+  return tabH !== '' && cfgH !== '' && tabH === cfgH;
+}
 
 /**
  * needTabLoad：是否先整页打开搜索落地页再 humanSearch。
- * 已在 xiaohongshu.com 且 URL 含 search_result：不整页打开，避免重复打开搜索页；站外或非搜索页必须先进入搜索页。
+ * 当前页域名与配置的「搜索页地址」域名不一致时，先跳转到配置搜索落地页，再做后续判断。
+ * 同域且 URL 已含 search_result：不整页打开；同域但非搜索路径则打开配置搜索页。
  * 回传依赖 isolate 对 currentKeywordTask 的重试 + 本页 fetch 拦包（不整页时由 humanSearch 触发新请求）。
  */
 function getSearchNavigatePlan(tabUrl) {
-  var u = (tabUrl || '').toLowerCase();
-  if (u.indexOf('xiaohongshu.com') === -1) {
-    return { needTabLoad: true, url: XHS_PC_SEARCH_LANDING };
+  if (!hostnameMatchesConfiguredSearchSite(tabUrl)) {
+    return { needTabLoad: true, url: buildSearchLandingUrl() };
   }
+  var u = (tabUrl || '').toLowerCase();
   if (u.indexOf('search_result') === -1) {
     return { needTabLoad: true, url: buildSearchLandingUrl() };
   }

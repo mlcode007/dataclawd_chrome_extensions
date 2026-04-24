@@ -118,8 +118,6 @@ function clearBackgroundAutoTaskScheduledTimers() {
 }
 var SEARCH_SITE_BASE_STORAGE_KEY = 'searchSiteBaseUrl';
 var SEARCH_SITE_BASE_DEFAULT = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
-/** 域外进入搜索时的固定 PC 搜索落地页 */
-var XHS_PC_SEARCH_LANDING = 'https://www.xiaohongshu.com/search_result?source=web_search_result_notes';
 var AUTO_TASK_AUTO_LOGIN_ENABLED_KEY = 'autoTaskAutoLoginEnabled';
 var AUTO_TASK_XHS_WORK_TAB_ID_KEY = 'autoTaskXhsWorkTabId';
 /** 自动登录成功后，再等待此时长再拉关键词/启动后台采集，避免会话未就绪 */
@@ -277,20 +275,45 @@ function buildSearchLandingUrlAsync(callback) {
   });
 }
 
+function bgParseUrlHostname(urlStr) {
+  try {
+    return new URL(urlStr).hostname.toLowerCase() || '';
+  } catch (e) {
+    return '';
+  }
+}
+
+function bgStripWwwHost(hostname) {
+  var h = hostname || '';
+  return h.indexOf('www.') === 0 ? h.slice(4) : h;
+}
+
 /** 与侧栏 getSearchNavigatePlan 一致（异步读侧栏搜索页地址） */
 function getSearchNavigatePlanAsync(tabUrl, cb) {
-  var u = (tabUrl || '').toLowerCase();
-  if (u.indexOf('xiaohongshu.com') === -1) {
-    cb({ needTabLoad: true, url: XHS_PC_SEARCH_LANDING });
-    return;
-  }
-  if (u.indexOf('search_result') === -1) {
-    buildSearchLandingUrlAsync(function(url) {
-      cb({ needTabLoad: true, url: url });
-    });
-    return;
-  }
-  cb({ needTabLoad: false, url: '' });
+  chrome.storage.local.get([SEARCH_SITE_BASE_STORAGE_KEY], function(o) {
+    var base = normalizeSearchSiteBaseUrl(o[SEARCH_SITE_BASE_STORAGE_KEY]);
+    var landing;
+    try {
+      var parsed = new URL(base);
+      parsed.searchParams.delete('keyword');
+      landing = parsed.href;
+    } catch (e) {
+      landing = base;
+    }
+    var tabH = bgStripWwwHost(bgParseUrlHostname(tabUrl));
+    var cfgH = bgStripWwwHost(bgParseUrlHostname(base));
+    var domainMatch = tabH !== '' && cfgH !== '' && tabH === cfgH;
+    if (!domainMatch) {
+      cb({ needTabLoad: true, url: landing });
+      return;
+    }
+    var u = (tabUrl || '').toLowerCase();
+    if (u.indexOf('search_result') === -1) {
+      cb({ needTabLoad: true, url: landing });
+      return;
+    }
+    cb({ needTabLoad: false, url: '' });
+  });
 }
 
 function getSearchSiteOriginFromStorage(callback) {
